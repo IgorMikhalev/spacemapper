@@ -154,6 +154,8 @@ pub struct App {
     filter_text: String,
     filter_applied: String,
     filter_edited: Option<Instant>,
+    /// how long the last filter recalculation took
+    filter_cost: Duration,
     filter: Filter,
 
     path_input: String,
@@ -208,6 +210,7 @@ impl App {
             filter_text: String::new(),
             filter_applied: String::new(),
             filter_edited: None,
+            filter_cost: Duration::ZERO,
             filter: Filter::default(),
             path_input: util::home_dir().to_string_lossy().into_owned(),
             mounts: Vec::new(),
@@ -345,10 +348,12 @@ impl App {
     }
 
     fn apply_filter(&mut self) {
+        let t0 = Instant::now();
         self.filter = Filter::parse(&self.filter_text, util::now_secs());
         self.filter_applied = self.filter_text.clone();
         self.filter_edited = None;
         self.recompute();
+        self.filter_cost = t0.elapsed();
     }
 
     fn toast(&mut self, msg: impl Into<String>) {
@@ -1854,10 +1859,15 @@ impl eframe::App for App {
         self.handle_drops(ctx);
 
         if let Some(t) = self.filter_edited {
-            if t.elapsed() > Duration::from_millis(450) && self.filter_text != self.filter_applied {
+            // Apply while typing when filtering is fast; on very large scans
+            // wait for a short pause so typing stays smooth.
+            let wait = if self.filter_cost < Duration::from_millis(60) { Duration::ZERO } else { Duration::from_millis(200) };
+            if self.filter_text == self.filter_applied {
+                self.filter_edited = None;
+            } else if t.elapsed() >= wait {
                 self.apply_filter();
             } else {
-                ctx.request_repaint_after(Duration::from_millis(100));
+                ctx.request_repaint_after(wait - t.elapsed());
             }
         }
 

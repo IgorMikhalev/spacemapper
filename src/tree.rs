@@ -10,6 +10,8 @@ pub const NONE: u32 = u32::MAX;
 
 pub struct Node {
     pub name: Box<str>,
+    /// lowercase name, for filtering
+    pub lname: Box<str>,
     pub parent: u32,
     pub children: Vec<u32>,
     pub kind: Kind,
@@ -99,7 +101,8 @@ impl Tree {
     fn add(&mut self, t: TNode, parent: u32) -> u32 {
         let id = self.nodes.len() as u32;
         let TNode { name, kind, alloc, apparent, mtime, ctime, atime, flags, children } = t;
-        self.nodes.push(Node { name, parent, children: Vec::new(), kind, flags, alloc, apparent, mtime, ctime, atime });
+        let lname = name.to_lowercase().into_boxed_str();
+        self.nodes.push(Node { name, lname, parent, children: Vec::new(), kind, flags, alloc, apparent, mtime, ctime, atime });
         if !children.is_empty() {
             let mut ids = Vec::with_capacity(children.len());
             for c in children {
@@ -133,6 +136,7 @@ impl Tree {
         let id = self.nodes.len() as u32;
         self.nodes.push(Node {
             name: name.into(),
+            lname: name.to_lowercase().into(),
             parent,
             children: Vec::new(),
             kind,
@@ -270,7 +274,74 @@ impl Tree {
                 hidden[i as usize] = hidden[node.parent as usize] || node.name.starts_with('.');
             }
         }
-        let mut name_buf = String::new();
+        // lowercase full paths of folders, built top-down once
+        let mut dir_paths: Vec<String> = Vec::new();
+        if filter.needs_path {
+            dir_paths = vec![String::new(); n];
+            dir_paths[self.root as usize] = self.root_path.to_string_lossy().to_lowercase();
+            for &i in &order {
+                let node = &self.nodes[i as usize];
+                if i == self.root || !node.is_dir() {
+                    continue;
+                }
+                let parent = &dir_paths[node.parent as usize];
+                let mut p = String::with_capacity(parent.len() + 1 + node.lname.len());
+                p.push_str(parent);
+                if !p.ends_with('/') {
+                    p.push('/');
+                }
+                p.push_str(&node.lname);
+                dir_paths[i as usize] = p;
+            }
+        }
+        // which files pass the filter, checked in parallel
+        let mut pass: Vec<bool> = Vec::new();
+        if active {
+            use rayon::prelude::*;
+            pass = vec![false; n];
+            let file_ids: Vec<u32> = order
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    let k = self.nodes[i as usize].kind;
+                    !matches!(k, Kind::Dir | Kind::Free | Kind::Unknown)
+                })
+                .collect();
+            let results: Vec<bool> = file_ids
+                .par_iter()
+                .with_min_len(4096)
+                .map_init(String::new, |buf, &i| {
+                    let node = &self.nodes[i as usize];
+                    let path = if filter.needs_path {
+                        buf.clear();
+                        buf.push_str(&dir_paths[node.parent as usize]);
+                        if !buf.ends_with('/') {
+                            buf.push('/');
+                        }
+                        buf.push_str(&node.lname);
+                        Some(buf.as_str())
+                    } else {
+                        None
+                    };
+                    let info = FileInfo {
+                        name: &node.lname,
+                        path,
+                        size: match mode {
+                            SizeMode::OnDisk => node.alloc,
+                            SizeMode::Apparent => node.apparent,
+                        },
+                        mtime: node.mtime,
+                        ctime: node.ctime,
+                        atime: node.atime,
+                        hidden: hidden.get(i as usize).copied().unwrap_or(false),
+                    };
+                    filter.matches(&info)
+                })
+                .collect();
+            for (&i, ok) in file_ids.iter().zip(results) {
+                pass[i as usize] = ok;
+            }
+        }
         for &i in order.iter().rev() {
             let node = &self.nodes[i as usize];
             let raw = match mode {
@@ -282,32 +353,10 @@ impl Tree {
                 Kind::Free => (if show_free && !active { node.alloc } else { 0 }, 0),
                 Kind::Unknown => (if show_unknown && !active { node.alloc } else { 0 }, 0),
                 _ => {
-                    if !active {
+                    if !active || pass[i as usize] {
                         (raw, 1)
                     } else {
-                        name_buf.clear();
-                        for ch in node.name.chars() {
-                            name_buf.extend(ch.to_lowercase());
-                        }
-                        let path = if filter.needs_path {
-                            Some(self.path(i).to_string_lossy().to_lowercase())
-                        } else {
-                            None
-                        };
-                        let info = FileInfo {
-                            name: &name_buf,
-                            path: path.as_deref(),
-                            size: raw,
-                            mtime: node.mtime,
-                            ctime: node.ctime,
-                            atime: node.atime,
-                            hidden: hidden.get(i as usize).copied().unwrap_or(false),
-                        };
-                        if filter.matches(&info) {
-                            (raw, 1)
-                        } else {
-                            (0, 0)
-                        }
+                        (0, 0)
                     }
                 }
             };
@@ -322,3 +371,4 @@ impl Tree {
         Values { size, files }
     }
 }
+

@@ -18,8 +18,30 @@
 use crate::tree::DateKind;
 
 pub struct Pat {
-    glob: Vec<char>,
+    kind: PatKind,
     path: bool,
+}
+
+/// Most patterns are a plain "contains", "ends with" or "starts with";
+/// those are matched directly, only the rest goes through the general glob.
+enum PatKind {
+    Contains(String),
+    Suffix(String),
+    Prefix(String),
+    Exact(String),
+    Glob(Vec<char>),
+}
+
+impl Pat {
+    fn matches(&self, s: &str) -> bool {
+        match &self.kind {
+            PatKind::Contains(t) => s.contains(t.as_str()),
+            PatKind::Suffix(t) => s.ends_with(t.as_str()),
+            PatKind::Prefix(t) => s.starts_with(t.as_str()),
+            PatKind::Exact(t) => s == t,
+            PatKind::Glob(g) => glob_match(g, s),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -68,12 +90,22 @@ impl FileInfo<'_> {
 fn make_pat(s: &str) -> Pat {
     let s = s.to_lowercase();
     let path = s.contains('/');
-    let glob: Vec<char> = if s.contains('*') || s.contains('?') {
-        s.chars().collect()
+    let glob = if s.contains('*') || s.contains('?') { s.clone() } else { format!("*{s}*") };
+    let lead = glob.starts_with('*');
+    let trail = glob.ends_with('*') && glob.len() > 1;
+    let inner = glob.trim_start_matches('*').trim_end_matches('*');
+    let kind = if inner.contains('*') || inner.contains('?') {
+        PatKind::Glob(glob.chars().collect())
     } else {
-        format!("*{s}*").chars().collect()
+        let t = inner.to_string();
+        match (lead, trail) {
+            (true, true) => PatKind::Contains(t),
+            (true, false) => PatKind::Suffix(t),
+            (false, true) => PatKind::Prefix(t),
+            (false, false) => PatKind::Exact(t),
+        }
     };
-    Pat { glob, path }
+    Pat { kind, path }
 }
 
 fn glob_match(p: &[char], s: &str) -> bool {
@@ -241,9 +273,9 @@ impl Filter {
         }
         let hit = |p: &Pat| {
             if p.path {
-                f.path.map(|s| glob_match(&p.glob, s)).unwrap_or(false)
+                f.path.map(|s| p.matches(s)).unwrap_or(false)
             } else {
-                glob_match(&p.glob, f.name)
+                p.matches(f.name)
             }
         };
         if self.exclude.iter().any(hit) {
@@ -262,6 +294,21 @@ mod tests {
         assert!(!glob_match(&"*.mkv".chars().collect::<Vec<_>>(), "film.mkv.part"));
         assert!(glob_match(&"*cache*".chars().collect::<Vec<_>>(), ".cache"));
         assert!(glob_match(&"a?c".chars().collect::<Vec<_>>(), "abc"));
+        // fast paths behave like the glob
+        for (pat, yes, no) in [
+            ("*.mkv", "film.mkv", "film.mkv.part"),
+            ("cache", "my.cache.db", "cach"),
+            ("img_*", "img_01.jpg", "my_img_01.jpg"),
+            ("*a*b*", "xaxbx", "xbxax"),
+            ("readme", "readme", "other"),
+            ("*", "anything", ""),
+        ] {
+            let p = make_pat(pat);
+            assert!(p.matches(yes), "{pat} should match {yes}");
+            if !no.is_empty() {
+                assert!(!p.matches(no), "{pat} should not match {no}");
+            }
+        }
     }
     fn file<'a>(name: &'a str, size: u64, mtime: i64) -> FileInfo<'a> {
         FileInfo { name, path: None, size, mtime, ctime: mtime, atime: mtime, hidden: false }
