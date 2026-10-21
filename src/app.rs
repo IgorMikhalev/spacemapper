@@ -2,12 +2,14 @@
 //! The GUI: start screen, scan progress and the treemap view.
 
 mod panel;
+mod prefs;
+mod tools;
 
 use crate::filter::Filter;
 use crate::layout::{self, Item, ItemKind, Params};
 use crate::scan::{self, Kind, Progress, ScanOutput, F_DENIED, F_HARDLINK_DUP, F_MOUNT, F_SNAPSHOTS};
 use crate::theme::{self, *};
-use crate::tree::{SizeMode, Tree, Values, NONE};
+use crate::tree::{DateKind, SizeMode, Tree, Values, NONE};
 use crate::util::{self, fmt_count, fmt_size, Mount};
 use eframe::egui::{
     self, epaint::RectShape, epaint::TessellationOptions, epaint::Tessellator, pos2, vec2, Align, Align2, Color32,
@@ -82,6 +84,8 @@ struct Settings {
     show_free: bool,
     show_unknown: bool,
     color: ColorMode,
+    /// which date the age colors use
+    age_date: DateKind,
     cross_fs: bool,
     full_access: bool,
 }
@@ -95,6 +99,7 @@ struct CacheKey {
     depth: u32,
     detail: usize,
     color: ColorMode,
+    age_date: DateKind,
     ver: u64,
     ppp: u32,
 }
@@ -161,6 +166,11 @@ pub struct App {
     toast: Option<(String, Instant)>,
     cache: Option<LayoutCache>,
     panel: panel::PanelState,
+    dupes: tools::DupState,
+    changes: tools::ChangesState,
+    /// unfiltered on-disk sizes, for comparing with earlier scans
+    history_vals: Values,
+    saved_prefs: String,
     logo: egui::TextureHandle,
     menu_from_list: bool,
     list_menu_response: Option<Response>,
@@ -191,6 +201,7 @@ impl App {
                 show_free: true,
                 show_unknown: true,
                 color: ColorMode::Sections,
+                age_date: DateKind::Added,
                 cross_fs: false,
                 full_access: false,
             },
@@ -206,6 +217,10 @@ impl App {
             toast: None,
             cache: None,
             panel: panel::PanelState::default(),
+            dupes: tools::DupState::default(),
+            changes: tools::ChangesState::default(),
+            history_vals: Values { size: Vec::new(), files: Vec::new() },
+            saved_prefs: String::new(),
             logo: cc.egui_ctx.load_texture(
                 "logo",
                 egui::ColorImage::from_rgba_unmultiplied([128, 128], crate::ICON_RGBA),
@@ -214,6 +229,7 @@ impl App {
             menu_from_list: false,
             list_menu_response: None,
         };
+        app.load_prefs();
         app.refresh_mounts(&cc.egui_ctx);
         if let Some(p) = start {
             app.path_input = p.to_string_lossy().into_owned();
@@ -284,6 +300,13 @@ impl App {
                 self.selected = None;
                 self.last_scan = Some((elapsed, job.progress.files.load(Relaxed), out.cancelled));
                 self.scanned_elevated = job.elevated;
+                self.dupes = tools::DupState { min_idx: self.dupes.min_idx, ..Default::default() };
+                self.update_history_vals();
+                if !out.cancelled {
+                    self.record_history();
+                } else {
+                    self.changes = tools::ChangesState::default();
+                }
             }
             Some(target) => {
                 let Some(tree) = &mut self.tree else { return };
@@ -296,9 +319,16 @@ impl App {
                 self.selected = Some(Target::Node(new));
                 let name = tree.nodes[new as usize].name.to_string();
                 self.toast(format!("Rescanned {name} in {}", util::fmt_duration(elapsed)));
+                self.update_history_vals();
             }
         }
         self.recompute();
+    }
+
+    fn update_history_vals(&mut self) {
+        if let Some(tree) = &self.tree {
+            self.history_vals = tree.compute_values(SizeMode::OnDisk, &Filter::default(), false, false);
+        }
     }
 
     fn recompute(&mut self) {
@@ -529,7 +559,7 @@ fn level(depth: u16) -> f32 {
     (depth.saturating_sub(1)).min(5) as f32
 }
 
-fn item_fills(item: &Item, tree: &Tree, mode: ColorMode, now: i64) -> Fills {
+fn item_fills(item: &Item, tree: &Tree, mode: ColorMode, age: DateKind, now: i64) -> Fills {
     let (h, s0) = SECTIONS[item.section as usize % SECTIONS.len()];
     let s = if mode == ColorMode::Sections { s0 } else { 0.0 };
     let lv = level(item.depth);
@@ -542,7 +572,7 @@ fn item_fills(item: &Item, tree: &Tree, mode: ColorMode, now: i64) -> Fills {
         }
         ItemKind::DirClosed => {
             if mode == ColorMode::ByAge {
-                same(age_color(tree.nodes[item.node as usize].mtime, now))
+                same(age_color(tree.nodes[item.node as usize].date(age), now))
             } else {
                 same(hsl(h, s * 0.45, 0.34 + 0.035 * lv))
             }
@@ -566,7 +596,7 @@ fn item_fills(item: &Item, tree: &Tree, mode: ColorMode, now: i64) -> Fills {
                     Some(hh) => hsl(hh, 0.50, 0.64),
                     None => hsl(0.0, 0.0, 0.58),
                 },
-                ColorMode::ByAge => age_color(n.mtime, now),
+                ColorMode::ByAge => age_color(n.date(age), now),
             };
             same(c)
         }
@@ -626,7 +656,7 @@ impl App {
             if r.width() < 1.0 || r.height() < 1.0 {
                 continue;
             }
-            let fills = item_fills(item, tree, self.settings.color, now);
+            let fills = item_fills(item, tree, self.settings.color, self.settings.age_date, now);
             let rad = radius_for(r);
             shapes.push(Shape::Rect(RectShape::filled(r, CornerRadius::same(rad), fills.body)));
             if item.header {
@@ -786,6 +816,7 @@ impl App {
             depth: self.settings.depth,
             detail: self.settings.detail,
             color: self.settings.color,
+            age_date: self.settings.age_date,
             ver: self.ver,
             ppp: ppp.to_bits(),
         };
@@ -826,6 +857,11 @@ impl App {
         if let Some(sel) = self.selected.and_then(|t| self.find_item(t)) {
             let cr = CornerRadius::same(radius_for(sel.rect));
             painter.rect_stroke(sel.rect.expand(1.0), cr, Stroke::new(2.0_f32, ACCENT), StrokeKind::Outside);
+        }
+        for it in self.panel.highlight.iter().filter_map(|&n| self.find_item(Target::Node(n))) {
+            let cr = CornerRadius::same(radius_for(it.rect));
+            painter.rect_filled(it.rect, cr, Color32::from_rgba_unmultiplied(122, 162, 255, 60));
+            painter.rect_stroke(it.rect, cr, Stroke::new(2.0_f32, ACCENT), StrokeKind::Inside);
         }
         if let Some(it) = self.panel.hovered.and_then(|n| self.find_item(Target::Node(n))) {
             let cr = CornerRadius::same(radius_for(it.rect));
@@ -935,6 +971,15 @@ impl App {
                     info.rows.push(("Apparent", fmt_size(node.apparent)));
                 }
                 info.rows.push(("Modified", util::fmt_date(node.mtime)));
+                if !node.is_dir() {
+                    // only show when it tells something new (> 1 minute apart)
+                    if node.added() - node.mtime > 60 {
+                        info.rows.push(("Added", util::fmt_date(node.added())));
+                    }
+                    if !tree.no_atime() && node.atime - node.mtime.max(node.ctime) > 60 {
+                        info.rows.push(("Opened", util::fmt_date(node.atime)));
+                    }
+                }
                 if node.kind == Kind::Link {
                     info.notes.push("Symbolic link (not followed)".into());
                 }
@@ -1240,10 +1285,32 @@ impl App {
                     (ColorMode::Sections, icon::PALETTE, "Color by top-level folder"),
                     (ColorMode::Mono, icon::CIRCLE_HALF, "Grayscale"),
                     (ColorMode::ByType, icon::TAG, "Color by file type"),
-                    (ColorMode::ByAge, icon::CLOCK, "Color by last modified date"),
+                    (ColorMode::ByAge, icon::CLOCK, "Color by age: green = recent, red = old"),
                 ] {
                     if icon_btn(ui, ic, tip, true, self.settings.color == mode).clicked() {
                         self.settings.color = mode;
+                    }
+                }
+                if self.settings.color == ColorMode::ByAge {
+                    let label = |d: DateKind| match d {
+                        DateKind::Modified => "Modified",
+                        DateKind::Added => "Added",
+                        DateKind::Opened => "Opened",
+                    };
+                    egui::ComboBox::from_id_salt("age_date")
+                        .selected_text(RichText::new(label(self.settings.age_date)).size(12.5))
+                        .width(84.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.settings.age_date, DateKind::Added, "Added")
+                                .on_hover_text("When the file was put on this disk or last changed");
+                            ui.selectable_value(&mut self.settings.age_date, DateKind::Modified, "Modified")
+                                .on_hover_text("When the file contents were last changed. Installed and downloaded files often keep old dates.");
+                            ui.selectable_value(&mut self.settings.age_date, DateKind::Opened, "Opened")
+                                .on_hover_text("When the file was last read. Not recorded on drives mounted with noatime.");
+                        });
+                    if self.settings.age_date == DateKind::Opened && self.tree.as_ref().map(|t| t.no_atime()).unwrap_or(false) {
+                        ui.label(RichText::new(icon::WARNING).color(WARN))
+                            .on_hover_text("This drive is mounted with noatime, so open dates are not recorded. Colors fall back to the modified date.");
                     }
                 }
             });
@@ -1340,7 +1407,12 @@ impl App {
                                     ("/node_modules/", "match against the full path"),
                                     ("!*.log", "hide matching files"),
                                     (">100mb  <2gb", "size limits (kb, mb, gb, tb)"),
-                                    (">1y  <7d", "modified before / within (h, d, w, mo, y)"),
+                                    (">1y  <7d", "modified more than a year ago / in the last 7 days"),
+                                    ("added>1y  added<7d", "put on this disk or changed (installed, copied, downloaded)"),
+                                    ("opened>1y", "not opened for a year (not on noatime drives)"),
+                                    ("empty", "files of 0 bytes"),
+                                    ("hidden", "hidden files and files in hidden folders"),
+                                    ("", "age units: h, d, w, mo, y"),
                                 ] {
                                     ui.monospace(a);
                                     ui.label(RichText::new(b).color(TEXT_DIM));
@@ -1353,6 +1425,9 @@ impl App {
             self.filter_presets(ui);
             if let Some(err) = &self.filter.error {
                 ui.label(RichText::new(format!("{}  {err}", icon::WARNING)).color(WARN));
+            } else if self.filter.uses_opened() && self.tree.as_ref().map(|t| t.no_atime()).unwrap_or(false) {
+                ui.label(RichText::new(format!("{}  Open dates not recorded on this drive", icon::WARNING)).color(WARN))
+                    .on_hover_text("The drive is mounted with the noatime option, so the system does not record when files are opened. The \"opened\" filter cannot work here.");
             }
             ui.add_space(6.0);
             self.breadcrumbs(ui);
@@ -1364,29 +1439,81 @@ impl App {
     }
 
     fn filter_presets(&mut self, ui: &mut Ui) {
-        const PRESETS: &[(&str, &str, &str)] = &[
+        type Preset = (&'static str, &'static str, &'static str);
+        const SIZE: &[Preset] = &[
             (icon::ARROW_FAT_UP, "Files over 1 GB", ">1gb"),
             (icon::ARROW_FAT_UP, "Files over 100 MB", ">100mb"),
-            (icon::CALENDAR_BLANK, "Not modified for a year", ">1y"),
-            (icon::FILM_STRIP, "Videos", "*.mp4;*.mkv;*.mov;*.avi;*.webm;*.m4v;*.wmv"),
-            (icon::IMAGE, "Images", "*.jpg;*.jpeg;*.png;*.gif;*.webp;*.heic;*.tif;*.tiff;*.exr;*.raw;*.cr2;*.nef;*.dng;*.psd"),
-            (icon::MUSIC_NOTES, "Audio", "*.mp3;*.flac;*.wav;*.ogg;*.opus;*.m4a;*.aac"),
-            (icon::FILE_ZIP, "Archives and disk images", "*.zip;*.7z;*.rar;*.tar;*.gz;*.xz;*.zst;*.bz2;*.iso;*.img;*.qcow2;*.vdi"),
+            (icon::ARROW_FAT_UP, "Files over 10 MB", ">10mb"),
+            (icon::FILE_DASHED, "Empty files", "empty"),
+        ];
+        const AGE: &[Preset] = &[
+            (icon::SPARKLE, "Added in the last 7 days", "added<7d"),
+            (icon::SPARKLE, "Added in the last 30 days", "added<30d"),
+            (icon::CALENDAR_BLANK, "On this disk for over a year", "added>1y"),
+            (icon::CALENDAR_BLANK, "Contents not changed for a year", "modified>1y"),
+            (icon::EYE_SLASH, "Not opened for a year", "opened>1y"),
+            (icon::STACK, "Large and old (over 100 MB, over a year)", ">100mb;added>1y"),
+        ];
+        const TYPES: &[Preset] = &[
+            (icon::FILM_STRIP, "Videos", "*.mp4;*.mkv;*.mov;*.avi;*.webm;*.m4v;*.wmv;*.mpg;*.mpeg;*.ts"),
+            (icon::IMAGE, "Images", "*.jpg;*.jpeg;*.png;*.gif;*.webp;*.heic;*.avif;*.tif;*.tiff;*.exr;*.hdr;*.raw;*.cr2;*.cr3;*.nef;*.arw;*.dng;*.psd;*.kra;*.xcf"),
+            (icon::MUSIC_NOTES, "Audio", "*.mp3;*.flac;*.wav;*.ogg;*.opus;*.m4a;*.aac;*.aiff"),
+            (icon::FILE_TEXT, "Documents", "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.txt;*.md;*.xls;*.xlsx;*.ods;*.csv;*.ppt;*.pptx;*.odp;*.epub"),
+            (icon::CUBE, "3D and design files", "*.blend;*.blend1;*.fbx;*.obj;*.gltf;*.glb;*.usd;*.usda;*.usdc;*.usdz;*.abc;*.ztl;*.zpr;*.spp;*.sbs;*.sbsar;*.max;*.ma;*.mb;*.uasset;*.umap"),
+            (icon::FILE_ZIP, "Archives", "*.zip;*.7z;*.rar;*.tar;*.gz;*.tgz;*.xz;*.zst;*.bz2;*.lz4"),
+            (icon::DISC, "Disk and VM images", "*.iso;*.img;*.qcow2;*.vdi;*.vmdk;*.vhd;*.vhdx;*.raw.xz"),
+        ];
+        const CLEANUP: &[Preset] = &[
             (icon::BROOM, "Caches", "/.cache/;/cache/;/caches/"),
-            (icon::CODE, "Build and dependency folders", "/node_modules/;/target/;/__pycache__/;/.venv/;/venv/;/build/;/.gradle/"),
-            (icon::PACKAGE, "Package caches", "/var/cache/pacman/;/.cargo/registry/;/.npm/;/.cache/pip/;/.cache/yay/;/.cache/paru/"),
+            (icon::GAME_CONTROLLER, "Shader caches", "/mesa_shader_cache/;/mesa_shader_cache_db/;/shadercache/;/.nv/;/nvidia/glcache/;/dxvk-cache/;/vkd3d-proton.cache"),
+            (icon::GLOBE, "Browser caches", "/.cache/mozilla/;/.cache/chromium/;/.cache/google-chrome/;/.cache/bravesoftware/;/.cache/vivaldi/;/.cache/microsoft-edge/"),
+            (icon::IMAGES, "Thumbnails", "/.cache/thumbnails/"),
+            (icon::PACKAGE, "Package caches", "/var/cache/pacman/;/var/cache/apt/;/var/cache/dnf/;/var/cache/zypp/;/.cargo/registry/;/.npm/;/.cache/pip/;/.cache/yay/;/.cache/paru/;/.gradle/caches/;/.m2/repository/"),
+            (icon::CODE, "Build and dependency folders", "/node_modules/;/target/;/__pycache__/;/.venv/;/venv/;/build/;/.gradle/;/dist/"),
+            (icon::SCROLL, "Logs", "*.log;*.log.*;/var/log/"),
+            (icon::BUG, "Crash dumps", "/var/lib/systemd/coredump/;/var/crash/"),
             (icon::TRASH, "Trash", "/.local/share/trash/"),
         ];
+        const APPS: &[Preset] = &[
+            (icon::GAME_CONTROLLER, "Steam games", "/steamapps/"),
+            (icon::GAME_CONTROLLER, "Wine and Proton prefixes", "/compatdata/;/.wine/;/pfx/drive_c/"),
+            (icon::PACKAGE, "Flatpak apps and data", "/var/lib/flatpak/;/.local/share/flatpak/;/.var/app/"),
+            (icon::PACKAGE, "Snap packages", "/var/lib/snapd/;/snap/"),
+            (icon::CUBE, "Containers (Docker, Podman)", "/var/lib/docker/;/var/lib/containers/;/.local/share/containers/"),
+            (icon::DESKTOP, "Virtual machines", "/var/lib/libvirt/;/virtualbox vms/;/.local/share/gnome-boxes/;*.qcow2;*.vdi;*.vmdk"),
+        ];
+        const OTHER: &[Preset] = &[(icon::EYE_SLASH, "Hidden files and folders", "hidden")];
+
+        let no_atime = self.tree.as_ref().map(|t| t.no_atime()).unwrap_or(false);
         let mut chosen: Option<&str> = None;
-        group(ui, |ui| {
-            ui.menu_button(RichText::new(format!("{}  Sort  {}", icon::FUNNEL_SIMPLE, icon::CARET_DOWN)).color(TEXT), |ui| {
-                ui.set_min_width(260.0);
-                for &(ic, label, pat) in PRESETS {
-                    if ui.button(format!("{ic}   {label}")).on_hover_text(pat).clicked() {
-                        chosen = Some(pat);
+        let section = |ui: &mut Ui, ic: &str, title: &str, list: &[Preset], chosen: &mut Option<&'static str>| {
+            ui.menu_button(format!("{ic}   {title}"), |ui| {
+                ui.set_min_width(290.0);
+                for &(ic, label, pat) in list {
+                    let disabled = no_atime && pat.contains("opened");
+                    let tip = if disabled {
+                        "This drive is mounted with noatime, so it does not record when files are opened.".to_string()
+                    } else {
+                        pat.replace(';', "  ")
+                    };
+                    let r = ui.add_enabled(!disabled, egui::Button::new(format!("{ic}   {label}")));
+                    let r = if disabled { r.on_disabled_hover_text(tip) } else { r.on_hover_text(tip) };
+                    if r.clicked() {
+                        *chosen = Some(pat);
                         ui.close();
                     }
                 }
+            });
+        };
+        group(ui, |ui| {
+            ui.menu_button(RichText::new(format!("{}  Sort  {}", icon::FUNNEL_SIMPLE, icon::CARET_DOWN)).color(TEXT), |ui| {
+                ui.set_min_width(220.0);
+                section(ui, icon::ARROWS_OUT_SIMPLE, "Size", SIZE, &mut chosen);
+                section(ui, icon::CLOCK, "Age", AGE, &mut chosen);
+                section(ui, icon::TAG, "File types", TYPES, &mut chosen);
+                section(ui, icon::BROOM, "Cleanup candidates", CLEANUP, &mut chosen);
+                section(ui, icon::SQUARES_FOUR, "Apps and games", APPS, &mut chosen);
+                section(ui, icon::DOTS_THREE, "Other", OTHER, &mut chosen);
                 ui.separator();
                 if ui.button(format!("{}   Clear filter", icon::X)).clicked() {
                     chosen = Some("");
@@ -1722,6 +1849,8 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_job();
+        self.poll_dupes();
+        self.save_prefs_if_changed();
         self.handle_drops(ctx);
 
         if let Some(t) = self.filter_edited {

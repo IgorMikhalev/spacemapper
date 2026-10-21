@@ -89,6 +89,8 @@ pub struct Mount {
     pub point: PathBuf,
     pub source: String,
     pub fstype: String,
+    /// per-mount options such as "rw,noatime"
+    pub options: String,
 }
 
 fn unescape_mount(s: &str) -> String {
@@ -128,6 +130,7 @@ pub fn read_mounts() -> Vec<Mount> {
             point: PathBuf::from(unescape_mount(lf[4])),
             fstype: rf[0].to_string(),
             source: unescape_mount(rf[1]),
+            options: lf.get(5).unwrap_or(&"").to_string(),
         });
     }
     v

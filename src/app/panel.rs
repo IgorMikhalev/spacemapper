@@ -12,6 +12,8 @@ pub(super) enum Tab {
     Contents,
     Files,
     Types,
+    Duplicates,
+    Changes,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,11 +45,13 @@ pub(super) struct PanelState {
     pub cache: Option<ListCache>,
     /// node hovered in the list, highlighted in the treemap
     pub hovered: Option<u32>,
+    /// several nodes to highlight (copies of a duplicate)
+    pub highlight: Vec<u32>,
 }
 
 impl Default for PanelState {
     fn default() -> Self {
-        PanelState { open: true, tab: Tab::Contents, sort: SortBy::Size, descending: true, cache: None, hovered: None }
+        PanelState { open: true, tab: Tab::Contents, sort: SortBy::Size, descending: true, cache: None, hovered: None, highlight: Vec::new() }
     }
 }
 
@@ -78,7 +82,7 @@ impl App {
         let mut types: Vec<TypeRow> = Vec::new();
 
         match tab {
-            Tab::Contents => {
+            Tab::Contents | Tab::Duplicates | Tab::Changes => {
                 rows = tree.nodes[root as usize]
                     .children
                     .iter()
@@ -153,7 +157,7 @@ impl App {
         let st = &mut self.panel;
         ui.add_space(8.0);
         // tabs
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             group(ui, |ui| {
                 for (tab, ic, label, tip) in [
                     (Tab::Contents, icon::FOLDER_SIMPLE, "Contents", "Items in the current folder"),
@@ -168,15 +172,32 @@ impl App {
                     }
                 }
             });
+            group(ui, |ui| {
+                for (tab, ic, label, tip) in [
+                    (Tab::Duplicates, icon::COPY, "Duplicates", "Files with identical contents"),
+                    (Tab::Changes, icon::CHART_LINE_UP, "Changes", "What grew or shrank since an earlier scan"),
+                ] {
+                    if text_btn(ui, ic, label, tip, st.tab == tab).clicked() {
+                        st.tab = tab;
+                    }
+                }
+            });
         });
         ui.add_space(4.0);
+        self.panel.highlight.clear();
+        match self.panel.tab {
+            Tab::Duplicates => return self.dupes_panel(ui),
+            Tab::Changes => return self.changes_panel(ui),
+            _ => {}
+        }
+        let st = &mut self.panel;
         // sorting
         ui.horizontal(|ui| {
             ui.label(RichText::new("Sort").size(12.5).color(TEXT_FAINT));
             let options: &[(SortBy, &str)] = match st.tab {
                 Tab::Types => &[(SortBy::Size, "Size"), (SortBy::Count, "Files"), (SortBy::Name, "Name")],
                 Tab::Files => &[(SortBy::Size, "Size"), (SortBy::Name, "Name"), (SortBy::Modified, "Modified")],
-                Tab::Contents => &[(SortBy::Size, "Size"), (SortBy::Count, "Files"), (SortBy::Name, "Name"), (SortBy::Modified, "Modified")],
+                _ => &[(SortBy::Size, "Size"), (SortBy::Count, "Files"), (SortBy::Name, "Name"), (SortBy::Modified, "Modified")],
             };
             group(ui, |ui| {
                 for &(s, label) in options {
@@ -215,7 +236,7 @@ impl App {
 
         let count = if tab == Tab::Types { cache.types.len() } else { cache.rows.len() };
         let caption = match tab {
-            Tab::Contents => util::count_of(count as u64, "item"),
+            Tab::Contents | Tab::Duplicates | Tab::Changes => util::count_of(count as u64, "item"),
             Tab::Files if count >= MAX_FILES => format!("{MAX_FILES} largest files"),
             Tab::Files => util::count_of(count as u64, "file"),
             Tab::Types => util::count_of(count as u64, "file type"),

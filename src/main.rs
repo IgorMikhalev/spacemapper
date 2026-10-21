@@ -2,6 +2,9 @@
 //! Spacemapper: treemap disk usage viewer.
 
 mod app;
+mod dupes;
+mod export;
+mod history;
 mod filter;
 mod layout;
 mod scan;
@@ -23,8 +26,13 @@ fn main() -> eframe::Result<()> {
             "-h" | "--help" => {
                 println!(
                     "{APP_NAME} {} - treemap disk usage viewer\n\n\
-                     Usage: spacemapper [FOLDER]\n\n\
-                     Opens FOLDER, or the drive list if no folder is given.\n\
+                     Usage:\n  \
+                     spacemapper [FOLDER]\n      \
+                     Open FOLDER, or the drive list if no folder is given.\n  \
+                     spacemapper --json FOLDER [--max-depth N] [--cross]\n      \
+                     Scan FOLDER and print the result as JSON.\n      \
+                     --max-depth N  list entries only N levels deep (default: all)\n      \
+                     --cross        also scan other filesystems mounted inside\n\n\
                      Spacemapper only reads files; it does not modify or delete them.",
                     env!("CARGO_PKG_VERSION")
                 );
@@ -36,6 +44,36 @@ fn main() -> eframe::Result<()> {
                 let Some(p) = args.get(2) else { std::process::exit(2) };
                 let cross = args.iter().any(|a| a == "--cross");
                 std::process::exit(scan::run_helper(std::path::Path::new(p), cross));
+            }
+            "--json" => {
+                let args: Vec<String> = std::env::args().skip(2).collect();
+                let mut path: Option<PathBuf> = None;
+                let mut max_depth = u32::MAX;
+                let mut cross = false;
+                let mut it = args.iter();
+                while let Some(a) = it.next() {
+                    match a.as_str() {
+                        "--cross" => cross = true,
+                        "--max-depth" => match it.next().and_then(|v| v.parse().ok()) {
+                            Some(d) => max_depth = d,
+                            None => {
+                                eprintln!("--max-depth needs a number");
+                                std::process::exit(2);
+                            }
+                        },
+                        _ if path.is_none() => path = Some(PathBuf::from(a)),
+                        _ => {
+                            eprintln!("Unexpected argument: {a}");
+                            std::process::exit(2);
+                        }
+                    }
+                }
+                let Some(p) = path else {
+                    eprintln!("Usage: spacemapper --json FOLDER [--max-depth N] [--cross]");
+                    std::process::exit(2);
+                };
+                let p = std::fs::canonicalize(&p).unwrap_or(p);
+                std::process::exit(export::run(&p, max_depth, cross));
             }
             "-V" | "--version" => {
                 println!("{APP_NAME} {}", env!("CARGO_PKG_VERSION"));

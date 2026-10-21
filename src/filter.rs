@@ -1,18 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! SpaceSniffer-like filter syntax.
+//! Filter syntax. Terms are separated by `;` and all must match:
 //!
-//! Terms are separated by `;`:
-//!   *.mkv;*.mp4     show only files matching any of these name patterns
-//!   cache           no wildcard = "name contains"
-//!   /node_modules/  a pattern containing `/` is matched against the full path
-//!   !*.log          exclude matching files
-//!   >100mb  <2gb    size limits (b, kb, mb, gb, tb)
-//!   >30d  <1w       age: older than 30 days / changed within the last week
-//!                   (h, d, w, mo, y)
+//!   *.mkv;*.mp4       files matching any of these name patterns
+//!   cache             no wildcard = "name contains"
+//!   /node_modules/    a pattern containing `/` is matched against the full path
+//!   !*.log            exclude matching files
+//!   >100mb  <2gb      size limits (b, kb, mb, gb, tb)
+//!   >1y  <7d          modified more than a year ago / within the last 7 days
+//!   added>1y          on this disk (installed, copied, extracted) for over a year
+//!   added<7d          added to this disk or changed in the last 7 days
+//!   opened>1y         not opened for over a year (needs atime, see below)
+//!   empty             files of 0 bytes
+//!   hidden            files inside hidden folders or starting with a dot
+//!
+//! Age units: h, d, w, mo, y. `modified>1y` is the same as `>1y`.
+
+use crate::tree::DateKind;
 
 pub struct Pat {
     glob: Vec<char>,
     path: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AgeCond {
+    kind: DateKind,
+    /// true: date must be before `cutoff` (older), false: after it (newer)
+    older: bool,
+    cutoff: i64,
 }
 
 #[derive(Default)]
@@ -21,12 +36,33 @@ pub struct Filter {
     exclude: Vec<Pat>,
     min_size: Option<u64>,
     max_size: Option<u64>,
-    /// file mtime must be <= this
-    older_than: Option<i64>,
-    /// file mtime must be >= this
-    newer_than: Option<i64>,
+    ages: Vec<AgeCond>,
+    empty: bool,
+    hidden: bool,
     pub needs_path: bool,
+    pub needs_hidden: bool,
     pub error: Option<String>,
+}
+
+/// What the filter looks at for one file. `name` and `path` are lowercase.
+pub struct FileInfo<'a> {
+    pub name: &'a str,
+    pub path: Option<&'a str>,
+    pub size: u64,
+    pub mtime: i64,
+    pub ctime: i64,
+    pub atime: i64,
+    pub hidden: bool,
+}
+
+impl FileInfo<'_> {
+    fn date(&self, kind: DateKind) -> i64 {
+        match kind {
+            DateKind::Modified => self.mtime,
+            DateKind::Added => self.mtime.max(self.ctime),
+            DateKind::Opened => self.atime.max(self.mtime),
+        }
+    }
 }
 
 fn make_pat(s: &str) -> Pat {
@@ -105,27 +141,51 @@ impl Filter {
             if term.is_empty() {
                 continue;
             }
-            if let Some(rest) = term.strip_prefix('>').or_else(|| term.strip_prefix('<')) {
-                let greater = term.starts_with('>');
+            let lower = term.to_lowercase();
+            match lower.as_str() {
+                "empty" => {
+                    f.empty = true;
+                    continue;
+                }
+                "hidden" => {
+                    f.hidden = true;
+                    f.needs_hidden = true;
+                    continue;
+                }
+                _ => {}
+            }
+            // optional date keyword in front of > or <
+            let (kind, cmp) = [
+                ("modified", DateKind::Modified),
+                ("added", DateKind::Added),
+                ("opened", DateKind::Opened),
+            ]
+            .iter()
+            .find_map(|(k, d)| lower.strip_prefix(k).map(|rest| (Some(*d), rest.trim_start())))
+            .unwrap_or((None, lower.as_str()));
+            let cmp = cmp.strip_prefix(':').map(str::trim_start).unwrap_or(cmp);
+
+            if let Some(rest) = cmp.strip_prefix('>').or_else(|| cmp.strip_prefix('<')) {
+                let greater = cmp.starts_with('>');
                 let rest = rest.trim_start_matches('=');
-                match quantity(rest) {
-                    Some(Q::Size(b)) => {
+                match (quantity(rest), kind) {
+                    (Some(Q::Size(b)), None) => {
                         if greater {
                             f.min_size = Some(b)
                         } else {
                             f.max_size = Some(b)
                         }
                     }
-                    Some(Q::Age(secs)) => {
+                    (Some(Q::Age(secs)), k) => f.ages.push(AgeCond {
+                        kind: k.unwrap_or(DateKind::Modified),
                         // ">30d" = older than 30 days, "<30d" = newer
-                        if greater {
-                            f.older_than = Some(now - secs)
-                        } else {
-                            f.newer_than = Some(now - secs)
-                        }
-                    }
-                    None => f.error = Some(format!("Can't understand \"{term}\"")),
+                        older: greater,
+                        cutoff: now - secs,
+                    }),
+                    _ => f.error = Some(format!("Can't understand \"{term}\"")),
                 }
+            } else if kind.is_some() {
+                f.error = Some(format!("Use {term}>1y or {term}<7d"));
             } else if let Some(rest) = term.strip_prefix('!') {
                 if !rest.is_empty() {
                     let p = make_pat(rest);
@@ -146,37 +206,44 @@ impl Filter {
             || !self.exclude.is_empty()
             || self.min_size.is_some()
             || self.max_size.is_some()
-            || self.older_than.is_some()
-            || self.newer_than.is_some()
+            || !self.ages.is_empty()
+            || self.empty
+            || self.hidden
     }
 
-    /// `name` and `path` must already be lowercase.
-    pub fn matches(&self, name: &str, path: Option<&str>, size: u64, mtime: i64) -> bool {
+    /// True when the filter uses last-opened dates.
+    pub fn uses_opened(&self) -> bool {
+        self.ages.iter().any(|a| a.kind == DateKind::Opened)
+    }
+
+    pub fn matches(&self, f: &FileInfo) -> bool {
+        if self.empty && f.size != 0 {
+            return false;
+        }
+        if self.hidden && !f.hidden {
+            return false;
+        }
         if let Some(m) = self.min_size {
-            if size < m {
+            if f.size < m {
                 return false;
             }
         }
         if let Some(m) = self.max_size {
-            if size > m {
+            if f.size > m {
                 return false;
             }
         }
-        if let Some(t) = self.older_than {
-            if mtime > t {
-                return false;
-            }
-        }
-        if let Some(t) = self.newer_than {
-            if mtime < t {
+        for a in &self.ages {
+            let d = f.date(a.kind);
+            if (a.older && d > a.cutoff) || (!a.older && d < a.cutoff) {
                 return false;
             }
         }
         let hit = |p: &Pat| {
             if p.path {
-                path.map(|s| glob_match(&p.glob, s)).unwrap_or(false)
+                f.path.map(|s| glob_match(&p.glob, s)).unwrap_or(false)
             } else {
-                glob_match(&p.glob, name)
+                glob_match(&p.glob, f.name)
             }
         };
         if self.exclude.iter().any(hit) {
@@ -196,18 +263,57 @@ mod tests {
         assert!(glob_match(&"*cache*".chars().collect::<Vec<_>>(), ".cache"));
         assert!(glob_match(&"a?c".chars().collect::<Vec<_>>(), "abc"));
     }
+    fn file<'a>(name: &'a str, size: u64, mtime: i64) -> FileInfo<'a> {
+        FileInfo { name, path: None, size, mtime, ctime: mtime, atime: mtime, hidden: false }
+    }
+
     #[test]
     fn parsing() {
         let f = Filter::parse("*.mkv; >100mb; !*sample*; >30d", 1_000_000_000);
         assert!(f.is_active());
-        assert!(f.matches("movie.mkv", None, 200 << 20, 0));
-        assert!(!f.matches("movie.mkv", None, 50 << 20, 0));
-        assert!(!f.matches("sample.mkv", None, 200 << 20, 0));
-        assert!(!f.matches("movie.mkv", None, 200 << 20, 999_999_999));
+        assert!(f.matches(&file("movie.mkv", 200 << 20, 0)));
+        assert!(!f.matches(&file("movie.mkv", 50 << 20, 0)));
+        assert!(!f.matches(&file("sample.mkv", 200 << 20, 0)));
+        assert!(!f.matches(&file("movie.mkv", 200 << 20, 999_999_999)));
         let g = Filter::parse("/node_modules/", 0);
         assert!(g.needs_path);
-        assert!(g.matches("x.js", Some("/home/a/node_modules/x.js"), 1, 0));
-        assert!(!g.matches("x.js", Some("/home/a/src/x.js"), 1, 0));
+        let mut x = file("x.js", 1, 0);
+        x.path = Some("/home/a/node_modules/x.js");
+        assert!(g.matches(&x));
+        x.path = Some("/home/a/src/x.js");
+        assert!(!g.matches(&x));
         assert!(Filter::parse(">5zz", 0).error.is_some());
+        assert!(Filter::parse("added", 0).error.is_some());
+    }
+
+    #[test]
+    fn date_kinds() {
+        let now = 100 * 86400 * 365;
+        let year = 365 * 86400;
+        // contents from 3 years ago, installed on this disk yesterday
+        let installed = FileInfo { name: "lib.so", path: None, size: 10, mtime: now - 3 * year, ctime: now - 86400, atime: now - 3 * year, hidden: false };
+        assert!(Filter::parse(">1y", now).matches(&installed));
+        assert!(Filter::parse("modified>1y", now).matches(&installed));
+        assert!(!Filter::parse("added>1y", now).matches(&installed));
+        assert!(Filter::parse("added<7d", now).matches(&installed));
+        assert!(Filter::parse("added: <7d", now).matches(&installed));
+        assert!(Filter::parse("opened>1y", now).matches(&installed));
+        assert!(Filter::parse("opened>1y", now).uses_opened());
+        let mut opened = installed;
+        opened.atime = now - 3600;
+        assert!(!Filter::parse("opened>1y", now).matches(&opened));
+    }
+
+    #[test]
+    fn keywords() {
+        let mut f = file("a", 0, 0);
+        assert!(Filter::parse("empty", 0).matches(&f));
+        f.size = 1;
+        assert!(!Filter::parse("empty", 0).matches(&f));
+        let h = Filter::parse("hidden", 0);
+        assert!(h.needs_hidden);
+        assert!(!h.matches(&f));
+        f.hidden = true;
+        assert!(h.matches(&f));
     }
 }

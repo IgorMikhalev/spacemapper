@@ -37,6 +37,11 @@ pub struct TNode {
     pub alloc: u64,
     pub apparent: u64,
     pub mtime: i64,
+    /// inode change time: when the file was written to this disk or its
+    /// metadata last changed (install, copy, extract, chmod, rename)
+    pub ctime: i64,
+    /// last access time (only meaningful without the noatime mount option)
+    pub atime: i64,
     pub flags: u8,
     pub children: Vec<TNode>,
 }
@@ -128,6 +133,8 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
         alloc: md.blocks() * 512,
         apparent: md.size(),
         mtime: md.mtime(),
+        ctime: md.ctime(),
+        atime: md.atime(),
         flags: 0,
         children: Vec::new(),
     };
@@ -193,6 +200,8 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
             alloc,
             apparent,
             mtime: emd.mtime(),
+        ctime: emd.ctime(),
+        atime: emd.atime(),
             flags,
             children: Vec::new(),
         });
@@ -210,6 +219,8 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
                     alloc: 0,
                     apparent: 0,
                     mtime: smd.mtime(),
+        ctime: smd.ctime(),
+        atime: smd.atime(),
                     flags: F_SNAPSHOTS,
                     children: Vec::new(),
                 }
@@ -221,6 +232,8 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
                     alloc: 0,
                     apparent: 0,
                     mtime: smd.mtime(),
+        ctime: smd.ctime(),
+        atime: smd.atime(),
                     flags: F_MOUNT,
                     children: Vec::new(),
                 }
@@ -260,6 +273,8 @@ fn write_tree(w: &mut impl Write, n: &TNode) -> io::Result<()> {
     w.write_all(&n.alloc.to_le_bytes())?;
     w.write_all(&n.apparent.to_le_bytes())?;
     w.write_all(&n.mtime.to_le_bytes())?;
+    w.write_all(&n.ctime.to_le_bytes())?;
+    w.write_all(&n.atime.to_le_bytes())?;
     w.write_all(&(n.name.len() as u32).to_le_bytes())?;
     w.write_all(n.name.as_bytes())?;
     w.write_all(&(n.children.len() as u32).to_le_bytes())?;
@@ -280,6 +295,8 @@ fn read_tree(r: &mut impl Read) -> io::Result<TNode> {
     let alloc = u64::from_le_bytes(read_exact(r)?);
     let apparent = u64::from_le_bytes(read_exact(r)?);
     let mtime = i64::from_le_bytes(read_exact(r)?);
+    let ctime = i64::from_le_bytes(read_exact(r)?);
+    let atime = i64::from_le_bytes(read_exact(r)?);
     let nlen = u32::from_le_bytes(read_exact(r)?) as usize;
     if nlen > 65536 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "bad name length"));
@@ -302,6 +319,8 @@ fn read_tree(r: &mut impl Read) -> io::Result<TNode> {
         alloc,
         apparent,
         mtime,
+        ctime,
+        atime,
         flags,
         children,
     })
@@ -354,7 +373,7 @@ pub fn run_helper(path: &Path, cross: bool) -> i32 {
     };
     let mut w = BufWriter::with_capacity(1 << 20, io::stdout().lock());
     let flag = if progress.cancel.load(Relaxed) { 1u8 } else { 0u8 };
-    if w.write_all(b"SPCM1").and_then(|_| w.write_all(&[flag])).and_then(|_| write_tree(&mut w, &root)).and_then(|_| w.flush()).is_err() {
+    if w.write_all(b"SPCM2").and_then(|_| w.write_all(&[flag])).and_then(|_| write_tree(&mut w, &root)).and_then(|_| w.flush()).is_err() {
         return 3;
     }
     0
@@ -438,7 +457,7 @@ pub fn scan_elevated(path: &Path, cross: bool, progress: Arc<Progress>) -> ScanO
     let mut r = BufReader::with_capacity(1 << 20, stdout);
     let mut magic = [0u8; 6];
     let result = r.read_exact(&mut magic).and_then(|_| {
-        if &magic[..5] != b"SPCM1" {
+        if &magic[..5] != b"SPCM2" {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "unexpected helper output"));
         }
         read_tree(&mut r)

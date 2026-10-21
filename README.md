@@ -17,24 +17,32 @@
 
 Spacemapper scans a drive or folder and draws every file and folder as a box. The size of a box matches the space it takes up, so large files and folders stand out right away. Folders contain their subfolders and files, and you can zoom in and out to look at any part in more detail.
 
-It works like SpaceSniffer on Windows. Spacemapper only reads file information: it has no option to delete, move or rename files, so you can look around without risk.
+It works like SpaceSniffer on Windows. Spacemapper only reads your files: it has no option to delete, move or rename them, so you can look around without risk. The only files it writes are its own settings and scan summaries (see [Files Spacemapper writes](#files-spacemapper-writes)).
 
 ## Features
 
 - Treemap of a whole drive or a single folder, zoomable with mouse or keyboard
-- Side list with three views: folder contents, largest files, and space per file type
-- Sorting by size, number of files, name or modification date
-- Filters by name, path, size and age, with ready-made filters for large files, old files, videos, images, audio, archives, caches, build folders, package caches and trash
+- Side list with folder contents, largest files and space per file type, sortable by size, number of files, name or date
+- Duplicate finder: files with identical contents, sorted by how much space they waste
+- Changes since an earlier scan: which folders grew or shrank
+- Filters by name, path, size, emptiness, hidden files and three kinds of age (modified, added to the disk, last opened)
+- About 35 ready-made filters, for example large files, files added this week, shader caches, browser caches, logs, Steam games, Flatpak data and virtual machines
 - Colors by top-level folder, file type or age, or plain grayscale
 - Free space and unreadable space shown when scanning a whole drive
 - Full access option to include system folders (asks for your administrator password)
 - Open files or show them in your file manager from the right-click menu
 - Fast multithreaded scanning; sizes match `du`
+- JSON output (`spacemapper --json FOLDER`) for scripts and other programs
+- Remembers your view settings
 - Runs on Wayland and X11
+
+| Duplicates | Changes since an earlier scan |
+|---|---|
+| ![Duplicate files](docs/screenshot-duplicates.png) | ![Folders that grew or shrank](docs/screenshot-changes.png) |
 
 | File types | Filter | Colored by age |
 |---|---|---|
-| ![Space per file type](docs/screenshot-types.png) | ![Filter for video files](docs/screenshot-filter.png) | ![Files colored by modification date](docs/screenshot-age.png) |
+| ![Space per file type](docs/screenshot-types.png) | ![Filter for video files](docs/screenshot-filter.png) | ![Files colored by age](docs/screenshot-age.png) |
 
 ## Installation
 
@@ -162,7 +170,7 @@ From left to right:
 - **Navigation**: back, forward, up one level, top level
 - **Detail** (− and +, or keys `[` and `]`): how small a box can get before small items are combined into one box labelled "N small items". More detail shows more individual files.
 - **Levels** (− and +, or keys `-` and `+`): how many folder levels are drawn inside each other
-- **Colors**: by top-level folder, grayscale, by file type, or by age (green for recently changed files, red for files not changed in years)
+- **Colors**: by top-level folder, grayscale, by file type, or by age (green for recent, red for old). In age mode a menu next to the buttons chooses which date is used: Added, Modified or Opened (see [Dates](#dates)).
 - **Disk / Length**: show the space used on disk, or the file sizes. They differ for compressed, sparse and very small files.
 - **Free / Unknown**: show or hide free space and unknown space (only when scanning a whole drive)
 - **List**, **Rescan** and **Drives** (back to the start screen)
@@ -174,8 +182,24 @@ Folders that only contain a single subfolder are drawn as one box, for example `
 - **Contents**: the files and folders in the current view
 - **Largest**: the 500 largest files in the current view and below it
 - **Types**: space used per file extension. Click a type to filter the treemap to it.
+- **Duplicates**: see below
+- **Changes**: see below
 
-Click a column name (Size, Files, Name, Modified) to sort by it, and click it again to reverse the order. Hovering over a row highlights the item in the treemap, and double-clicking opens it.
+In the first three, click a column name (Size, Files, Name, Modified) to sort by it, and click it again to reverse the order. Hovering over a row highlights the item in the treemap, and double-clicking opens it.
+
+### Duplicates
+
+Click **Find duplicates** to look for files with identical contents in the current folder and everything below it. Choose a minimum size first (1 MB, 10 MB, 100 MB or 1 GB); smaller limits find more but take longer.
+
+Spacemapper compares files in three steps: by size, by their first 64 KB, and only then by their full contents, so most files are never read completely. The results are sorted by the space you would free by keeping only one copy. Click a group to see where the copies are, hover over a copy to highlight it in the treemap, click it to show it there, or double-click to open its folder in your file manager.
+
+Hard links are already counted once and never show up as duplicates. On btrfs and XFS, copies made with reflinks (for example `cp --reflink`) share their data, so deleting one of them frees nothing.
+
+### Changes
+
+After every complete scan, Spacemapper saves a small summary of the folder sizes. When you scan the same folder again later, the **Changes** tab shows how much each folder grew or shrank compared with an earlier scan. Pick which earlier scan to compare with in the menu at the top; the last 10 are kept. Double-click a folder to see the changes inside it.
+
+Folders that were smaller than 1 MB in the earlier scan are not stored, so a folder that grew from almost nothing is marked "was under 1 MB" instead of showing an exact change.
 
 ### Filters
 
@@ -189,10 +213,27 @@ Type into the filter box, or pick one of the ready-made filters from the **Sort*
 | `!*.log` | everything except matching files |
 | `>100mb` | files larger than 100 MB (units: kb, mb, gb, tb) |
 | `<2gb` | files smaller than 2 GB |
-| `>1y` | files not modified for more than a year (units: h, d, w, mo, y) |
+| `>1y` | files whose contents were not modified for more than a year |
 | `<7d` | files modified in the last 7 days |
+| `added>1y` | files that have been on this disk for more than a year |
+| `added<7d` | files added to this disk (or changed) in the last 7 days |
+| `opened>1y` | files not opened for more than a year (see [Dates](#dates)) |
+| `empty` | files of 0 bytes |
+| `hidden` | hidden files, and files inside hidden folders |
 
-Terms can be combined. For example, `*.mkv;*.mp4;>1gb;>6mo` shows video files over 1 GB that were not changed in the last six months.
+Age units are h (hours), d (days), w (weeks), mo (months) and y (years). `modified>1y` is the same as `>1y`.
+
+Terms can be combined. For example, `*.mkv;*.mp4;>1gb;added>6mo` shows video files over 1 GB that have been on the disk for more than six months.
+
+The **Sort** menu groups the ready-made filters into Size, Age, File types, Cleanup candidates (caches, shader caches, browser caches, thumbnails, package caches, build folders, logs, crash dumps, trash), Apps and games (Steam, Wine and Proton prefixes, Flatpak, Snap, containers, virtual machines) and Other.
+
+### Dates
+
+Every file has three dates, and the age filters and colors can use any of them:
+
+- **Modified**: when the contents last changed. Files from packages, downloads and archives usually keep the date their author gave them, so a program you installed today can have a modified date from years ago.
+- **Added**: when the file was put on this disk or last changed, whichever is later. This is usually what you want for "old files I no longer need", and it is the default for the age colors.
+- **Opened**: when the file was last read. Linux only records this when the drive is mounted without the `noatime` option. Many systems use `noatime`, especially on btrfs. You can check with `findmnt -no OPTIONS /`. Spacemapper detects it and shows a warning instead of wrong results.
 
 ### Free and unknown space
 
@@ -218,6 +259,26 @@ exec-once = systemctl --user start hyprpolkitagent
 # Sway, i3 and others: install polkit-gnome or lxqt-policykit
 # and start it from your config.
 ```
+
+## JSON output
+
+```sh
+spacemapper --json ~/Downloads > downloads.json
+spacemapper --json / --max-depth 2
+```
+
+prints the scan as JSON instead of opening the window. Every entry has `name`, `type` (`dir`, `file`, `link` or `other`), `size` (bytes on disk), `apparent` (file length), and the dates `modified`, `added` and `opened` as Unix timestamps. Folders also have `files` (number of files below) and `children`, sorted largest first; folders that could not be read have `"unreadable": true`. The top level adds `path`, `scanned` and, for whole filesystems, `filesystem` with `total`, `used` and `free`. `--max-depth N` lists entries only N levels deep (deeper folders are still counted in the sizes), and `--cross` includes other mounted filesystems.
+
+## Files Spacemapper writes
+
+Spacemapper never changes your files. It writes only these:
+
+| File | Contents |
+|---|---|
+| `~/.config/spacemapper/settings.conf` | view settings (colors, detail, side list tab) |
+| `~/.local/state/spacemapper/history/` | folder size summaries for the Changes tab, the last 10 per scanned folder |
+
+Delete either at any time to reset it.
 
 ## How sizes are counted
 

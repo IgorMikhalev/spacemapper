@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Flat arena holding the scanned tree, plus size aggregation with filters.
 
-use crate::filter::Filter;
+use crate::filter::{FileInfo, Filter};
 use crate::scan::{Kind, TNode, F_DENIED};
 use crate::util::{self, Mount, Space};
 use std::path::{Path, PathBuf};
@@ -17,15 +17,40 @@ pub struct Node {
     pub alloc: u64,
     pub apparent: u64,
     pub mtime: i64,
+    pub ctime: i64,
+    pub atime: i64,
 }
 
 impl Node {
     pub fn is_dir(&self) -> bool {
         self.kind == Kind::Dir
     }
+    /// When the file arrived on this disk or was last changed: the later of
+    /// the modification and change times. A file installed today counts as
+    /// new even if its contents are years old.
+    pub fn added(&self) -> i64 {
+        self.mtime.max(self.ctime)
+    }
+
+    pub fn date(&self, kind: DateKind) -> i64 {
+        match kind {
+            DateKind::Modified => self.mtime,
+            DateKind::Added => self.added(),
+            DateKind::Opened => self.atime.max(self.mtime),
+        }
+    }
+
     pub fn is_pseudo(&self) -> bool {
         matches!(self.kind, Kind::Free | Kind::Unknown)
     }
+}
+
+/// Which file date to use for age filters and colors.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DateKind {
+    Modified,
+    Added,
+    Opened,
 }
 
 pub struct Tree {
@@ -34,7 +59,6 @@ pub struct Tree {
     pub root_path: PathBuf,
     pub free_id: u32,
     pub unknown_id: u32,
-    #[allow(dead_code)]
     pub mount: Option<Mount>,
     pub space: Option<Space>,
     pub is_mount_root: bool,
@@ -74,8 +98,8 @@ impl Tree {
 
     fn add(&mut self, t: TNode, parent: u32) -> u32 {
         let id = self.nodes.len() as u32;
-        let TNode { name, kind, alloc, apparent, mtime, flags, children } = t;
-        self.nodes.push(Node { name, parent, children: Vec::new(), kind, flags, alloc, apparent, mtime });
+        let TNode { name, kind, alloc, apparent, mtime, ctime, atime, flags, children } = t;
+        self.nodes.push(Node { name, parent, children: Vec::new(), kind, flags, alloc, apparent, mtime, ctime, atime });
         if !children.is_empty() {
             let mut ids = Vec::with_capacity(children.len());
             for c in children {
@@ -116,6 +140,8 @@ impl Tree {
             alloc: size,
             apparent: size,
             mtime: 0,
+            ctime: 0,
+            atime: 0,
         });
         self.nodes[parent as usize].children.push(id);
         id
@@ -207,6 +233,12 @@ impl Tree {
         p
     }
 
+    /// True when the scanned filesystem does not record access times, so
+    /// "opened" dates are meaningless.
+    pub fn no_atime(&self) -> bool {
+        self.mount.as_ref().map(|m| m.options.split(',').any(|o| o == "noatime")).unwrap_or(false)
+    }
+
     pub fn denied_count(&self) -> usize {
         self.nodes.iter().filter(|n| n.flags & F_DENIED != 0).count()
     }
@@ -225,6 +257,19 @@ impl Tree {
             stack.extend_from_slice(&self.nodes[i as usize].children);
         }
         let active = filter.is_active();
+        // hidden = inside a folder starting with "." (below the scan root) or
+        // itself starting with "."; computed top-down only when needed
+        let mut hidden = Vec::new();
+        if filter.needs_hidden {
+            hidden = vec![false; n];
+            for &i in &order {
+                let node = &self.nodes[i as usize];
+                if i == self.root || node.parent == NONE {
+                    continue;
+                }
+                hidden[i as usize] = hidden[node.parent as usize] || node.name.starts_with('.');
+            }
+        }
         let mut name_buf = String::new();
         for &i in order.iter().rev() {
             let node = &self.nodes[i as usize];
@@ -249,7 +294,16 @@ impl Tree {
                         } else {
                             None
                         };
-                        if filter.matches(&name_buf, path.as_deref(), raw, node.mtime) {
+                        let info = FileInfo {
+                            name: &name_buf,
+                            path: path.as_deref(),
+                            size: raw,
+                            mtime: node.mtime,
+                            ctime: node.ctime,
+                            atime: node.atime,
+                            hidden: hidden.get(i as usize).copied().unwrap_or(false),
+                        };
+                        if filter.matches(&info) {
                             (raw, 1)
                         } else {
                             (0, 0)
