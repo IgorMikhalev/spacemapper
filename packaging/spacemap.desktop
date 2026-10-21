@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Spacemap
+GenericName=Disk Usage Treemap
+Comment=Disk usage viewer
+Exec=spacemap %f
+Icon=spacemap
+Terminal=false
+Categories=System;Utility;Filesystem;
+Keywords=disk;space;usage;treemap;spacesniffer;storage;
+StartupWMClass=spacemap

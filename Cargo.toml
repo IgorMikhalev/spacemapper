@@ -1,0 +1,54 @@
+[package]
+name = "spacemap"
+version = "0.4.0"
+edition = "2024"
+description = "Treemap disk usage viewer"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Martin-ii/spacemap"
+authors = ["Martin Fleisch"]
+readme = "README.md"
+
+[dependencies]
+eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui-phosphor = "0.11"
+libc = "0.2.191"
+rayon = "1.12.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+
+# Used by `cargo generate-rpm` (see packaging/build-packages.sh)
+[package.metadata.generate-rpm]
+summary = "Treemap disk usage viewer"
+release = "1"
+assets = [
+    { source = "target/x86_64-unknown-linux-gnu/release/spacemap", dest = "/usr/bin/spacemap", mode = "755" },
+    { source = "packaging/spacemap.desktop", dest = "/usr/share/applications/spacemap.desktop", mode = "644" },
+    { source = "assets/icon/spacemap-32.png", dest = "/usr/share/icons/hicolor/32x32/apps/spacemap.png", mode = "644" },
+    { source = "assets/icon/spacemap-48.png", dest = "/usr/share/icons/hicolor/48x48/apps/spacemap.png", mode = "644" },
+    { source = "assets/icon/spacemap-64.png", dest = "/usr/share/icons/hicolor/64x64/apps/spacemap.png", mode = "644" },
+    { source = "assets/icon/spacemap-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/spacemap.png", mode = "644" },
+    { source = "assets/icon/spacemap-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/spacemap.png", mode = "644" },
+    { source = "assets/icon/spacemap-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/spacemap.png", mode = "644" },
+    { source = "packaging/io.github.martin_ii.spacemap.metainfo.xml", dest = "/usr/share/metainfo/io.github.martin_ii.spacemap.metainfo.xml", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/spacemap/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/spacemap/LICENSE", mode = "644", doc = true },
+    { source = "assets/Inter-LICENSE.txt", dest = "/usr/share/licenses/spacemap/Inter-LICENSE.txt", mode = "644", doc = true },
+]
+auto-req = "no"
+
+[package.metadata.generate-rpm.requires]
+"libGL.so.1()(64bit)" = "*"
+"libEGL.so.1()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+
+[package.metadata.generate-rpm.recommends]
+"libxkbcommon-x11" = "*"
+"libXcursor" = "*"
+"libXi" = "*"
+xdg-utils = "*"
+polkit = "*"
