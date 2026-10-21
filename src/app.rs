@@ -1510,7 +1510,7 @@ impl App {
                         ui.add(egui::Image::new(&self.logo).fit_to_exact_size(vec2(52.0, 52.0)));
                         ui.add_space(6.0);
                         ui.vertical(|ui| {
-                            ui.label(RichText::new("Spacemap").font(font_bold(26.0)).color(TEXT));
+                            ui.label(RichText::new("Spacemapper").font(font_bold(26.0)).color(TEXT));
                             ui.label(RichText::new("Disk usage viewer").color(TEXT_DIM));
                         });
                     });
@@ -1733,9 +1733,9 @@ impl eframe::App for App {
         }
 
         let title = match (&self.tree, &self.job) {
-            (_, Some(j)) if j.target.is_none() => format!("Scanning {} – Spacemap", j.path.display()),
-            (Some(t), _) => format!("{} – Spacemap", t.path(self.view_root).display()),
-            _ => "Spacemap".into(),
+            (_, Some(j)) if j.target.is_none() => format!("Scanning {} – Spacemapper", j.path.display()),
+            (Some(t), _) => format!("{} – Spacemapper", t.path(self.view_root).display()),
+            _ => "Spacemapper".into(),
         };
         if title != self.last_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));

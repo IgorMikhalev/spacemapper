@@ -307,7 +307,7 @@ fn read_tree(r: &mut impl Read) -> io::Result<TNode> {
     })
 }
 
-/// Entry point of the privileged helper (`spacemap --scan-helper PATH [--cross]`).
+/// Entry point of the privileged helper (`spacemapper --scan-helper PATH [--cross]`).
 pub fn run_helper(path: &Path, cross: bool) -> i32 {
     let progress = Arc::new(Progress::default());
     // the GUI closes our stdin to ask us to stop
@@ -365,7 +365,7 @@ pub fn scan_elevated(path: &Path, cross: bool, progress: Arc<Progress>) -> ScanO
     let fail = |msg: String| ScanOutput { root: None, error: Some(msg), cancelled: false };
     let exe = match std::env::current_exe() {
         Ok(e) => e,
-        Err(e) => return fail(format!("Could not locate the spacemap executable: {e}")),
+        Err(e) => return fail(format!("Could not locate the spacemapper executable: {e}")),
     };
     let mut cmd = Command::new("pkexec");
     cmd.arg(&exe).arg("--scan-helper").arg(path);

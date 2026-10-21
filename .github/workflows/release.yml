@@ -67,9 +67,9 @@ jobs:
         run: ${{ matrix.install }}
       - name: Check that it runs
         run: |
-          spacemap --version
-          test -f /usr/share/applications/spacemap.desktop
-          test -f /usr/share/icons/hicolor/256x256/apps/spacemap.png
+          spacemapper --version
+          test -f /usr/share/applications/spacemapper.desktop
+          test -f /usr/share/icons/hicolor/256x256/apps/spacemapper.png
 
   release:
     needs: [build, test]

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.martin_ii.spacemap</id>
-  <name>Spacemap</name>
+  <id>io.github.martin_ii.spacemapper</id>
+  <name>Spacemapper</name>
   <summary>Treemap disk usage viewer</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
@@ -10,23 +10,23 @@
   </developer>
   <description>
     <p>
-      Spacemap shows the contents of a drive or folder as a treemap. Each file
+      Spacemapper shows the contents of a drive or folder as a treemap. Each file
       and folder is drawn as a box sized by the space it uses, which makes large
       files and folders easy to find.
     </p>
     <p>
       It includes a sortable list of folder contents, the largest files and
       file types, filters by name, size and age, and an option to scan system
-      folders as administrator. Spacemap only reads files and cannot change or
+      folders as administrator. Spacemapper only reads files and cannot change or
       delete them.
     </p>
   </description>
-  <launchable type="desktop-id">spacemap.desktop</launchable>
-  <url type="homepage">https://github.com/Martin-ii/spacemap</url>
-  <url type="bugtracker">https://github.com/Martin-ii/spacemap/issues</url>
+  <launchable type="desktop-id">spacemapper.desktop</launchable>
+  <url type="homepage">https://github.com/Martin-ii/spacemapper</url>
+  <url type="bugtracker">https://github.com/Martin-ii/spacemapper/issues</url>
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/Martin-ii/spacemap/main/docs/screenshot-main.png</image>
+      <image>https://raw.githubusercontent.com/Martin-ii/spacemapper/main/docs/screenshot-main.png</image>
     </screenshot>
   </screenshots>
   <content_rating type="oars-1.1"/>

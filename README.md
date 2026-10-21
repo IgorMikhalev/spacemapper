@@ -1,23 +1,23 @@
 <p align="center">
-  <img src="assets/icon/spacemap-128.png" width="96" alt="">
+  <img src="assets/icon/spacemapper-128.png" width="96" alt="">
 </p>
 
-<h1 align="center">Spacemap</h1>
+<h1 align="center">Spacemapper</h1>
 
 <p align="center">Disk usage viewer for Linux that shows your files as a treemap.</p>
 
 <p align="center">
-  <a href="https://github.com/Martin-ii/spacemap/releases/latest">Download</a> ·
+  <a href="https://github.com/Martin-ii/spacemapper/releases/latest">Download</a> ·
   <a href="#installation">Installation</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#building-from-source">Building</a>
 </p>
 
-![Spacemap showing a home folder](docs/screenshot-main.png)
+![Spacemapper showing a home folder](docs/screenshot-main.png)
 
-Spacemap scans a drive or folder and draws every file and folder as a box. The size of a box matches the space it takes up, so large files and folders stand out right away. Folders contain their subfolders and files, and you can zoom in and out to look at any part in more detail.
+Spacemapper scans a drive or folder and draws every file and folder as a box. The size of a box matches the space it takes up, so large files and folders stand out right away. Folders contain their subfolders and files, and you can zoom in and out to look at any part in more detail.
 
-It works like SpaceSniffer on Windows. Spacemap only reads file information: it has no option to delete, move or rename files, so you can look around without risk.
+It works like SpaceSniffer on Windows. Spacemapper only reads file information: it has no option to delete, move or rename files, so you can look around without risk.
 
 ## Features
 
@@ -38,62 +38,62 @@ It works like SpaceSniffer on Windows. Spacemap only reads file information: it 
 
 ## Installation
 
-Packages for the most common distributions are on the [Releases](https://github.com/Martin-ii/spacemap/releases/latest) page. They work on 64-bit (x86_64) systems with glibc 2.28 or newer, which covers every distribution released since 2019.
+Packages for the most common distributions are on the [Releases](https://github.com/Martin-ii/spacemapper/releases/latest) page. They work on 64-bit (x86_64) systems with glibc 2.28 or newer, which covers every distribution released since 2019.
 
 ### Debian, Ubuntu, Linux Mint, Pop!_OS, elementary OS, Zorin OS
 
-Download `spacemap_VERSION-1_amd64.deb`, then run:
+Download `spacemapper_VERSION-1_amd64.deb`, then run:
 
 ```sh
-sudo apt install ./spacemap_*_amd64.deb
+sudo apt install ./spacemapper_*_amd64.deb
 ```
 
 You can also double-click the file to open it in your software center.
 
-To uninstall: `sudo apt remove spacemap`
+To uninstall: `sudo apt remove spacemapper`
 
 ### Fedora, RHEL, Rocky Linux, AlmaLinux
 
-Download `spacemap-VERSION-1.x86_64.rpm`, then run:
+Download `spacemapper-VERSION-1.x86_64.rpm`, then run:
 
 ```sh
-sudo dnf install ./spacemap-*.x86_64.rpm
+sudo dnf install ./spacemapper-*.x86_64.rpm
 ```
 
-To uninstall: `sudo dnf remove spacemap`
+To uninstall: `sudo dnf remove spacemapper`
 
 ### openSUSE
 
-Download `spacemap-VERSION-1.x86_64.rpm`, then run:
+Download `spacemapper-VERSION-1.x86_64.rpm`, then run:
 
 ```sh
-sudo zypper install --allow-unsigned-rpm ./spacemap-*.x86_64.rpm
+sudo zypper install --allow-unsigned-rpm ./spacemapper-*.x86_64.rpm
 ```
 
-To uninstall: `sudo zypper remove spacemap`
+To uninstall: `sudo zypper remove spacemapper`
 
 ### Arch Linux, CachyOS, EndeavourOS, Manjaro
 
-Download `spacemap-VERSION-1-x86_64.pkg.tar.zst`, then run:
+Download `spacemapper-VERSION-1-x86_64.pkg.tar.zst`, then run:
 
 ```sh
-sudo pacman -U spacemap-*-x86_64.pkg.tar.zst
+sudo pacman -U spacemapper-*-x86_64.pkg.tar.zst
 ```
 
-To uninstall: `sudo pacman -R spacemap`
+To uninstall: `sudo pacman -R spacemapper`
 
 To build the package yourself instead, see [Arch package from source](#arch-package-from-source).
 
 ### Any other distribution
 
-Download `spacemap-VERSION-x86_64.tar.gz` and extract it:
+Download `spacemapper-VERSION-x86_64.tar.gz` and extract it:
 
 ```sh
-tar xzf spacemap-*-x86_64.tar.gz
-cd spacemap-*/
+tar xzf spacemapper-*-x86_64.tar.gz
+cd spacemapper-*/
 ```
 
-You can run it straight from this folder with `./spacemap`. To add it to your application menu:
+You can run it straight from this folder with `./spacemapper`. To add it to your application menu:
 
 ```sh
 ./install.sh          # for your user only, installs to ~/.local
@@ -115,11 +115,11 @@ These are already installed on almost every desktop system.
 
 ## Usage
 
-Start Spacemap from your application menu, or from a terminal:
+Start Spacemapper from your application menu, or from a terminal:
 
 ```sh
-spacemap                    # opens the drive list
-spacemap ~/Downloads        # scans a folder directly
+spacemapper                    # opens the drive list
+spacemapper ~/Downloads        # scans a folder directly
 ```
 
 On the start screen, click **Scan** next to a drive, or enter a folder path. You can also drag a folder onto the window.
@@ -192,7 +192,7 @@ When you scan a whole drive, two extra boxes appear:
 
 Some folders, such as `/root` and parts of `/var`, can only be read by the administrator. To include them, turn on **Full access** on the start screen before scanning, or click **Rescan with full access** in the status bar after a scan.
 
-Spacemap then asks for your password through polkit (`pkexec`). Only the scanning part runs with administrator rights; the window itself keeps running as your user.
+Spacemapper then asks for your password through polkit (`pkexec`). Only the scanning part runs with administrator rights; the window itself keeps running as your user.
 
 The password prompt needs a polkit agent. GNOME, KDE Plasma, Cinnamon, Xfce and most other desktops include one. On window managers such as Hyprland, Sway or i3 you may need to install and start one yourself, for example:
 
@@ -231,17 +231,17 @@ sudo pacman -S base-devel rust
 Install Rust with [rustup](https://rustup.rs) if your distribution does not package a recent version. Then:
 
 ```sh
-git clone https://github.com/Martin-ii/spacemap.git
-cd spacemap
+git clone https://github.com/Martin-ii/spacemapper.git
+cd spacemapper
 cargo build --release
-./target/release/spacemap
+./target/release/spacemapper
 ```
 
 ### Arch package from source
 
 ```sh
-git clone https://github.com/Martin-ii/spacemap.git
-cd spacemap/packaging/arch
+git clone https://github.com/Martin-ii/spacemapper.git
+cd spacemapper/packaging/arch
 makepkg -si
 ```
 
@@ -251,6 +251,6 @@ makepkg -si
 
 ## License
 
-Spacemap is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE).
+Spacemapper is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE).
 
 The interface uses the [Inter](https://rsms.me/inter/) font (SIL Open Font License 1.1, see `assets/Inter-LICENSE.txt`) and [Phosphor](https://phosphoricons.com) icons (MIT License).

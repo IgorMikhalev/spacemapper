@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Spacemap: treemap disk usage viewer.
+//! Spacemapper: treemap disk usage viewer.
 
 mod app;
 mod filter;
@@ -13,8 +13,8 @@ use eframe::egui;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub const APP_NAME: &str = "Spacemap";
-pub const APP_ID: &str = "spacemap";
+pub const APP_NAME: &str = "Spacemapper";
+pub const APP_ID: &str = "spacemapper";
 
 fn main() -> eframe::Result<()> {
     let mut start: Option<PathBuf> = None;
@@ -23,9 +23,9 @@ fn main() -> eframe::Result<()> {
             "-h" | "--help" => {
                 println!(
                     "{APP_NAME} {} - treemap disk usage viewer\n\n\
-                     Usage: spacemap [FOLDER]\n\n\
+                     Usage: spacemapper [FOLDER]\n\n\
                      Opens FOLDER, or the drive list if no folder is given.\n\
-                     Spacemap only reads files; it does not modify or delete them.",
+                     Spacemapper only reads files; it does not modify or delete them.",
                     env!("CARGO_PKG_VERSION")
                 );
                 return Ok(());
@@ -75,4 +75,4 @@ pub fn app_icon() -> egui::IconData {
     egui::IconData { rgba: ICON_RGBA.to_vec(), width: 128, height: 128 }
 }
 
-pub const ICON_RGBA: &[u8] = include_bytes!("../assets/icon/spacemap-128.rgba");
+pub const ICON_RGBA: &[u8] = include_bytes!("../assets/icon/spacemapper-128.rgba");

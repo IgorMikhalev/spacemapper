@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=Spacemap
+Name=Spacemapper
 GenericName=Disk Usage Treemap
 Comment=Disk usage viewer
-Exec=spacemap %f
-Icon=spacemap
+Exec=spacemapper %f
+Icon=spacemapper
 Terminal=false
 Categories=System;Utility;Filesystem;
 Keywords=disk;space;usage;treemap;spacesniffer;storage;
-StartupWMClass=spacemap
+StartupWMClass=spacemapper
