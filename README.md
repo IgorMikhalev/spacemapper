@@ -46,13 +46,28 @@ It works like SpaceSniffer on Windows. Spacemapper only reads your files: it has
 
 ## Installation
 
-Packages for the most common distributions are on the [Releases](https://github.com/Martin-ii/spacemapper/releases/latest) page. They work on 64-bit (x86_64) systems with glibc 2.28 or newer, which covers every distribution released since 2019.
+Spacemapper runs on 64-bit (x86_64) Linux with glibc 2.28 or newer, which covers every distribution released since 2019.
 
-### AppImage (any distribution, no installation)
+### Quick install
+
+Open a terminal and run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Martin-ii/spacemapper/main/get.sh | sh
+```
+
+This downloads the latest release and installs it with your package manager on Arch, CachyOS, Manjaro, Debian, Ubuntu, Linux Mint, Fedora and openSUSE (you will be asked for your password). On other distributions it installs Spacemapper for your user in `~/.local`. Run the same command again to update to a newer version. You can [read the script](get.sh) before running it.
+
+### Manual install
+
+The packages are on the [Releases](https://github.com/Martin-ii/spacemapper/releases/latest) page. The commands below assume the downloaded file is in your Downloads folder.
+
+#### AppImage (any distribution, no installation)
 
 Download `Spacemapper-VERSION-x86_64.AppImage`, make it executable and run it:
 
 ```sh
+cd ~/Downloads
 chmod +x Spacemapper-*-x86_64.AppImage
 ./Spacemapper-*-x86_64.AppImage
 ```
@@ -61,11 +76,12 @@ You can also right-click the file in your file manager, open Properties, allow i
 
 If it does not start and mentions FUSE, install FUSE 2 (`sudo apt install libfuse2` on Debian and Ubuntu, `sudo dnf install fuse-libs` on Fedora, `sudo pacman -S fuse2` on Arch), or start it with `--appimage-extract-and-run` added after the file name.
 
-### Debian, Ubuntu, Linux Mint, Pop!_OS, elementary OS, Zorin OS
+#### Debian, Ubuntu, Linux Mint, Pop!_OS, elementary OS, Zorin OS
 
 Download `spacemapper_VERSION-1_amd64.deb`, then run:
 
 ```sh
+cd ~/Downloads
 sudo apt install ./spacemapper_*_amd64.deb
 ```
 
@@ -73,31 +89,34 @@ You can also double-click the file to open it in your software center.
 
 To uninstall: `sudo apt remove spacemapper`
 
-### Fedora, RHEL, Rocky Linux, AlmaLinux
+#### Fedora, RHEL, Rocky Linux, AlmaLinux
 
 Download `spacemapper-VERSION-1.x86_64.rpm`, then run:
 
 ```sh
+cd ~/Downloads
 sudo dnf install ./spacemapper-*.x86_64.rpm
 ```
 
 To uninstall: `sudo dnf remove spacemapper`
 
-### openSUSE
+#### openSUSE
 
 Download `spacemapper-VERSION-1.x86_64.rpm`, then run:
 
 ```sh
+cd ~/Downloads
 sudo zypper install --allow-unsigned-rpm ./spacemapper-*.x86_64.rpm
 ```
 
 To uninstall: `sudo zypper remove spacemapper`
 
-### Arch Linux, CachyOS, EndeavourOS, Manjaro
+#### Arch Linux, CachyOS, EndeavourOS, Manjaro
 
 Download `spacemapper-VERSION-1-x86_64.pkg.tar.zst`, then run:
 
 ```sh
+cd ~/Downloads
 sudo pacman -U spacemapper-*-x86_64.pkg.tar.zst
 ```
 
@@ -105,11 +124,12 @@ To uninstall: `sudo pacman -R spacemapper`
 
 To build the package yourself instead, see [Arch package from source](#arch-package-from-source).
 
-### Any other distribution
+#### Any other distribution
 
 Download `spacemapper-VERSION-x86_64.tar.gz` and extract it:
 
 ```sh
+cd ~/Downloads
 tar xzf spacemapper-*-x86_64.tar.gz
 cd spacemapper-*/
 ```
