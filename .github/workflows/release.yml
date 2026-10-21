@@ -26,12 +26,17 @@ jobs:
           rustup toolchain install stable --profile minimal
           python3 -m pip install --break-system-packages ziglang zstandard
           cargo install --locked cargo-zigbuild cargo-generate-rpm
+          sudo curl -sSLo /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          sudo chmod +x /usr/local/bin/appimagetool
 
       - name: Run tests
         run: cargo test --release --locked
 
       - name: Build packages
         run: bash packaging/build-packages.sh
+
+      - name: Check that the AppImage runs
+        run: ./dist/Spacemapper-*-x86_64.AppImage --appimage-extract-and-run --version
 
       - uses: actions/upload-artifact@v6
         with:
@@ -46,6 +51,8 @@ jobs:
       matrix:
         include:
           - image: debian:12
+            install: apt-get update && apt-get install -y ./dist/*.deb
+          - image: debian:13
             install: apt-get update && apt-get install -y ./dist/*.deb
           - image: ubuntu:22.04
             install: apt-get update && apt-get install -y ./dist/*.deb

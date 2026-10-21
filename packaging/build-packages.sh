@@ -4,9 +4,12 @@
 #   spacemapper_VERSION-1_amd64.deb             Debian, Ubuntu, Mint, Pop!_OS
 #   spacemapper-VERSION-1.x86_64.rpm            Fedora, openSUSE, RHEL
 #   spacemapper-VERSION-1-x86_64.pkg.tar.zst    Arch, CachyOS, EndeavourOS, Manjaro
+#   Spacemapper-VERSION-x86_64.AppImage         any distribution, no installation
 #
 # Requirements: cargo, cargo-zigbuild + zig (for a binary that runs on
-# glibc 2.28 and newer), cargo-generate-rpm, dpkg-deb, python3 + zstandard.
+# glibc 2.28 and newer), cargo-generate-rpm, dpkg-deb, python3 + zstandard,
+# appimagetool (set APPIMAGETOOL to its path if it is not in PATH; set
+# APPIMAGE_RUNTIME to a downloaded runtime file to build without network).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -92,6 +95,22 @@ cargo generate-rpm --target "$TARGET" -o "$DIST/spacemapper-$VERSION-1.x86_64.rp
 # ---------------------------------------------------------------- arch
 echo "==> pkg.tar.zst"
 python3 packaging/make-arch-pkg.py "$STAGE" "$VERSION" "$DIST/spacemapper-$VERSION-1-x86_64.pkg.tar.zst"
+
+# ---------------------------------------------------------------- AppImage
+echo "==> AppImage"
+APPDIR="$STAGE/Spacemapper.AppDir"
+mkdir -p "$APPDIR"
+cp -a "$STAGE/usr" "$APPDIR/"
+ln -s usr/bin/spacemapper "$APPDIR/AppRun"
+cp packaging/spacemapper.desktop "$APPDIR/spacemapper.desktop"
+cp assets/icon/spacemapper-256.png "$APPDIR/spacemapper.png"
+ln -s spacemapper.png "$APPDIR/.DirIcon"
+TOOL=${APPIMAGETOOL:-appimagetool}
+RUNTIME_ARGS=()
+[ -n "${APPIMAGE_RUNTIME:-}" ] && RUNTIME_ARGS=(--runtime-file "$APPIMAGE_RUNTIME")
+APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "$TOOL" --no-appstream "${RUNTIME_ARGS[@]}" \
+  "$APPDIR" "$DIST/Spacemapper-$VERSION-x86_64.AppImage" >/dev/null
+chmod 755 "$DIST/Spacemapper-$VERSION-x86_64.AppImage"
 
 # ---------------------------------------------------------------- checksums
 (cd "$DIST" && sha256sum -- * > SHA256SUMS)

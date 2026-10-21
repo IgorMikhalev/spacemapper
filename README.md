@@ -40,6 +40,19 @@ It works like SpaceSniffer on Windows. Spacemapper only reads file information: 
 
 Packages for the most common distributions are on the [Releases](https://github.com/Martin-ii/spacemapper/releases/latest) page. They work on 64-bit (x86_64) systems with glibc 2.28 or newer, which covers every distribution released since 2019.
 
+### AppImage (any distribution, no installation)
+
+Download `Spacemapper-VERSION-x86_64.AppImage`, make it executable and run it:
+
+```sh
+chmod +x Spacemapper-*-x86_64.AppImage
+./Spacemapper-*-x86_64.AppImage
+```
+
+You can also right-click the file in your file manager, open Properties, allow it to run as a program, and double-click it. Nothing is installed; to remove Spacemapper, delete the file.
+
+If it does not start and mentions FUSE, install FUSE 2 (`sudo apt install libfuse2` on Debian and Ubuntu, `sudo dnf install fuse-libs` on Fedora, `sudo pacman -S fuse2` on Arch), or start it with `--appimage-extract-and-run` added after the file name.
+
 ### Debian, Ubuntu, Linux Mint, Pop!_OS, elementary OS, Zorin OS
 
 Download `spacemapper_VERSION-1_amd64.deb`, then run:
@@ -247,7 +260,7 @@ makepkg -si
 
 ### Release packages
 
-`packaging/build-packages.sh` builds the .deb, .rpm, Arch package and tar.gz into `dist/`. It needs `cargo-zigbuild` with `zig` (used to build a binary that runs on older glibc versions), `cargo-generate-rpm`, `dpkg-deb` and Python with the `zstandard` module. The GitHub Actions workflow in `.github/workflows/release.yml` runs this script and tests the packages on Debian, Ubuntu, Fedora, openSUSE and Arch.
+`packaging/build-packages.sh` builds the AppImage, .deb, .rpm, Arch package and tar.gz into `dist/`. It needs `cargo-zigbuild` with `zig` (used to build a binary that runs on older glibc versions), `cargo-generate-rpm`, `dpkg-deb`, `appimagetool` and Python with the `zstandard` module. The GitHub Actions workflow in `.github/workflows/release.yml` runs this script and tests the packages on Debian 12 and 13, Ubuntu 22.04 and 24.04, Fedora, openSUSE and Arch.
 
 ## License
 

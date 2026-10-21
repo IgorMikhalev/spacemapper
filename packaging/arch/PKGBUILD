@@ -3,7 +3,7 @@
 # Builds the package from this repository checkout:
 #   cd packaging/arch && makepkg -si
 pkgname=spacemapper
-pkgver=0.4.0
+pkgver=0.4.1
 pkgrel=1
 pkgdesc="Treemap disk usage viewer"
 arch=('x86_64')

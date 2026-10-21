@@ -368,7 +368,18 @@ pub fn scan_elevated(path: &Path, cross: bool, progress: Arc<Progress>) -> ScanO
         Err(e) => return fail(format!("Could not locate the spacemapper executable: {e}")),
     };
     let mut cmd = Command::new("pkexec");
-    cmd.arg(&exe).arg("--scan-helper").arg(path);
+    // Inside an AppImage the running binary lives on a FUSE mount that only
+    // the current user can access, so root has to start the AppImage file
+    // itself. Extracting instead of mounting avoids needing FUSE as root.
+    match std::env::var_os("APPIMAGE").map(PathBuf::from) {
+        Some(appimage) if appimage.is_file() => {
+            cmd.arg(appimage).arg("--appimage-extract-and-run");
+        }
+        _ => {
+            cmd.arg(&exe);
+        }
+    }
+    cmd.arg("--scan-helper").arg(path);
     if cross {
         cmd.arg("--cross");
     }
