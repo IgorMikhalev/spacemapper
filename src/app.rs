@@ -20,7 +20,7 @@ use egui_phosphor::regular as icon;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::{self, Receiver};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -101,6 +101,7 @@ struct CacheKey {
     color: ColorMode,
     age_date: DateKind,
     ver: u64,
+    expanded: u64,
     ppp: u32,
 }
 
@@ -135,6 +136,16 @@ impl Target {
 
 pub struct App {
     tree: Option<Tree>,
+    /// "Drives" was clicked; go back to the start screen at the next frame
+    /// (the rest of the current frame still draws the old scan)
+    to_drives: bool,
+    /// folders opened one level further by a click (below the level limit);
+    /// reset when the view changes
+    expanded: HashSet<u32>,
+    expanded_root: u32,
+    expanded_ver: u64,
+    /// what the first click of a double-click hit
+    last_click: Option<Target>,
     vals: Values,
     ver: u64,
     job: Option<ScanJob>,
@@ -184,6 +195,11 @@ impl App {
         theme::apply_style(&cc.egui_ctx);
         let mut app = App {
             tree: None,
+            to_drives: false,
+            expanded: HashSet::new(),
+            expanded_root: NONE,
+            expanded_ver: 0,
+            last_click: None,
             vals: Values { size: Vec::new(), files: Vec::new() },
             ver: 0,
             job: None,
@@ -309,6 +325,7 @@ impl App {
             return;
         }
         let Some(root) = out.root else { return };
+        self.reset_expanded();
         match job.target {
             None => {
                 let tree = Tree::from_scan(root, &job.path);
@@ -660,7 +677,8 @@ impl App {
     fn build_cache(&self, key: CacheKey, rect: Rect, painter: &egui::Painter, ppp: f32) -> LayoutCache {
         let tree = self.tree.as_ref().unwrap();
         let params = Params {
-            max_depth: if self.settings.depth >= DEPTH_UNLIMITED { u32::MAX } else { self.settings.depth },
+            max_depth: self.max_depth(),
+            expanded: &self.expanded,
             min_box: DETAIL_LEVELS[self.settings.detail].0,
             header_h: HEADER_H,
             pad: 4.0,
@@ -823,7 +841,36 @@ impl App {
             .copied()
     }
 
+    fn max_depth(&self) -> u32 {
+        if self.settings.depth >= DEPTH_UNLIMITED { u32::MAX } else { self.settings.depth }
+    }
+
+    /// Folders opened by clicking only stay open in the view they were
+    /// opened in (and for the same scan).
+    fn reset_expanded(&mut self) {
+        if !self.expanded.is_empty() {
+            self.expanded.clear();
+            self.expanded_ver += 1;
+        }
+    }
+
+    /// Click on a folder cut off by the level limit: show one more level
+    /// inside it. Click on such an opened folder's header: close it again.
+    fn toggle_expanded(&mut self, t: Target, it: &Item) {
+        let Target::Node(n) = t else { return };
+        if it.kind == ItemKind::DirClosed && it.depth as u32 >= self.max_depth() {
+            self.expanded.insert(n);
+            self.expanded_ver += 1;
+        } else if it.kind == ItemKind::DirOpen && self.expanded.remove(&n) {
+            self.expanded_ver += 1;
+        }
+    }
+
     fn treemap(&mut self, ui: &mut Ui) {
+        if self.expanded_root != self.view_root {
+            self.expanded_root = self.view_root;
+            self.reset_expanded();
+        }
         let full = ui.available_rect_before_wrap();
         let response = ui.allocate_rect(full, Sense::click());
         let painter = ui.painter_at(full);
@@ -839,6 +886,7 @@ impl App {
             color: self.settings.color,
             age_date: self.settings.age_date,
             ver: self.ver,
+            expanded: self.expanded_ver,
             ppp: ppp.to_bits(),
         };
         if self.cache.as_ref().map(|c| c.key != key).unwrap_or(true) {
@@ -897,14 +945,19 @@ impl App {
         }
 
         // clicks
-        if response.clicked() {
-            self.selected = hover.map(|h| h.0);
-        }
         if response.double_clicked() {
-            if let Some((t, _)) = hover {
+            // the first click may have opened the folder, so use what it hit
+            // rather than what is under the pointer now
+            if let Some(t) = self.last_click.or(hover.map(|h| h.0)) {
                 if let Some(z) = self.zoom_target(t) {
                     self.go(z);
                 }
+            }
+        } else if response.clicked() {
+            self.selected = hover.map(|h| h.0);
+            self.last_click = self.selected;
+            if let Some((t, it)) = hover {
+                self.toggle_expanded(t, &it);
             }
         }
         if response.middle_clicked() {
@@ -987,6 +1040,11 @@ impl App {
                 info.rows.push(("Size", format!("{}  ({pct:.1}% of view)", fmt_size(it.value))));
                 if node.is_dir() {
                     info.rows.push(("Files", fmt_count(self.vals.files[n as usize])));
+                    if it.kind == ItemKind::DirClosed && it.depth as u32 >= self.max_depth() {
+                        info.hint = Some("Click to show what is inside, double-click to zoom in".into());
+                    } else if it.kind == ItemKind::DirOpen && self.expanded.contains(&n) {
+                        info.hint = Some("Click to close again, double-click to zoom in".into());
+                    }
                 }
                 if self.settings.size_mode == SizeMode::OnDisk && node.kind == Kind::File && fmt_size(node.apparent) != fmt_size(node.alloc) {
                     info.rows.push(("Apparent", fmt_size(node.apparent)));
@@ -1380,12 +1438,8 @@ impl App {
                     self.rescan_folder(id, &ctx);
                 }
                 if icon_btn(ui, icon::HARD_DRIVES, "Drives", true, false).clicked() {
-                    if let Some(job) = self.job.take() {
-                        job.progress.cancel.store(true, Relaxed);
-                    }
-                    self.tree = None;
-                    self.cache = None;
-                    self.refresh_mounts(&ctx);
+                    self.to_drives = true;
+                    ctx.request_repaint();
                 }
             });
         });
@@ -1941,6 +1995,14 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if std::mem::take(&mut self.to_drives) {
+            if let Some(job) = self.job.take() {
+                job.progress.cancel.store(true, Relaxed);
+            }
+            self.tree = None;
+            self.cache = None;
+            self.refresh_mounts(ctx);
+        }
         self.poll_job();
         self.poll_dupes();
         self.save_prefs_if_changed();

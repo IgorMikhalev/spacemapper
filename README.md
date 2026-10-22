@@ -176,6 +176,7 @@ On the start screen, click **Scan** next to a drive, or enter a folder path. You
 | Action | Mouse | Keyboard |
 |---|---|---|
 | Zoom into a folder | Double-click, or scroll up over it | Enter (on a selected item) |
+| Show one more level inside a folder | Click a folder cut off by the level limit (click its header to close it again) | |
 | Zoom out one level | Scroll down | U or Alt+Up |
 | Back / forward | Mouse back / forward buttons | Backspace, Alt+Left / Alt+Right |
 | Go to the top level | House button | Home |
@@ -195,7 +196,7 @@ From left to right:
 
 - **Navigation**: back, forward, up one level, top level
 - **Detail** (− and +, or keys `[` and `]`): how small a box can get before small items are combined into one box labelled "N small items". More detail shows more individual files.
-- **Levels** (− and +, or keys `-` and `+`): how many folder levels are drawn inside each other
+- **Levels** (− and +, or keys `-` and `+`): how many folder levels are drawn inside each other. With few levels you can still look inside a single folder: click it to show one more level in it, without changing the rest of the map.
 - **Colors**: by top-level folder, grayscale, by file type, or by age (green for recent, red for old). In age mode a menu next to the buttons chooses which date is used: Added, Modified or Opened (see [Dates](#dates)).
 - **Disk / Length**: show the space used on disk, or the file sizes. They differ for compressed, sparse and very small files.
 - **Free / Unknown**: show or hide free space and unknown space (only when scanning a whole drive)

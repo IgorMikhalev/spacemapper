@@ -102,6 +102,18 @@ APPDIR="$STAGE/Spacemapper.AppDir"
 mkdir -p "$APPDIR"
 cp -a "$STAGE/usr" "$APPDIR/"
 ln -s usr/bin/spacemapper "$APPDIR/AppRun"
+# Window system libraries that minimal systems sometimes lack. Spacemapper
+# loads the system's copy first and only uses these when one is missing
+# (see src/fallback_libs.rs). OpenGL drivers are never bundled.
+mkdir -p "$APPDIR/usr/lib/fallback"
+for lib in $(sed -n 's/^ *"\(lib[^"]*\.so[.0-9]*\)",$/\1/p' src/fallback_libs.rs); do
+  f=$(/sbin/ldconfig -p | awk -v l="$lib" '$1 == l && /x86-64/ {print $NF; exit}')
+  if [ -z "$f" ]; then
+    echo "missing $lib on the build system (install it to bundle it)" >&2
+    exit 1
+  fi
+  cp -L "$f" "$APPDIR/usr/lib/fallback/$lib"
+done
 cp packaging/spacemapper.desktop "$APPDIR/spacemapper.desktop"
 cp assets/icon/spacemapper-256.png "$APPDIR/spacemapper.png"
 ln -s spacemapper.png "$APPDIR/.DirIcon"

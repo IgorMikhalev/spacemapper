@@ -7,6 +7,8 @@
 mod app;
 mod dupes;
 mod export;
+#[cfg(target_os = "linux")]
+mod fallback_libs;
 mod history;
 mod filter;
 mod layout;
@@ -92,6 +94,9 @@ fn main() -> eframe::Result<()> {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fallback_libs::load();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
@@ -107,11 +112,20 @@ fn main() -> eframe::Result<()> {
         vsync: false,
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         APP_NAME,
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, start)))),
-    )
+    );
+    if let Err(e) = &result {
+        eprintln!(
+            "{APP_NAME} could not open its window: {e}\n\n\
+             It needs a graphical session (Wayland or X11) and OpenGL 2 or newer\n\
+             (Mesa or your graphics driver). To scan without a window, use:\n  \
+             spacemapper --json FOLDER"
+        );
+    }
+    result
 }
 
 /// The app icon (128x128 RGBA, pre-decoded so no image library is needed).

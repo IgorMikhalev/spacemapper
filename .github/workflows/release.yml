@@ -25,6 +25,9 @@ jobs:
       - name: Install tools
         run: |
           rustup toolchain install stable --profile minimal
+          # window system libraries bundled in the AppImage as a fallback
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 libx11-xcb1 libxcb-xkb1 libxext6 libxrender1 libxfixes3
           python3 -m pip install --break-system-packages ziglang zstandard
           cargo install --locked cargo-zigbuild cargo-generate-rpm
           sudo curl -sSLo /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
@@ -37,7 +40,17 @@ jobs:
         run: bash packaging/build-packages.sh
 
       - name: Check that the AppImage runs
-        run: ./dist/Spacemapper-*-x86_64.AppImage --appimage-extract-and-run --version
+        run: |
+          ./dist/Spacemapper-*-x86_64.AppImage --appimage-extract-and-run --version
+          # it has to keep its window open on a bare X server
+          sudo apt-get install -y xvfb
+          Xvfb :99 -screen 0 1280x800x24 &
+          sleep 2
+          set +e
+          DISPLAY=:99 timeout 15 ./dist/Spacemapper-*-x86_64.AppImage --appimage-extract-and-run
+          code=$?
+          set -e
+          if [ "$code" != 124 ]; then echo "The AppImage quit after starting (exit code $code)"; exit 1; fi
 
       - uses: actions/upload-artifact@v6
         with:

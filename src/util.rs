@@ -3,7 +3,7 @@
 //! opening files, and per-user folders. Everything that differs between
 //! Linux and Windows lives here, in the `imp` modules at the bottom.
 //!
-//! The only external programs started from here are `xdg-open` and
+//! The only external programs started from here are `gio`, `xdg-open` and
 //! `dbus-send` on Linux, and `explorer` on Windows (to show or open a file).
 
 use std::collections::HashMap;
@@ -112,6 +112,7 @@ pub struct Space {
     pub used: u64,
 }
 
+#[cfg_attr(unix, allow(dead_code))]
 fn run_detached(mut cmd: Command) -> bool {
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     match cmd.spawn() {
@@ -280,11 +281,27 @@ mod imp {
         s
     }
 
-    /// Open a file or folder with the default application (xdg-open).
+    /// Open a file or folder with the default application. `gio open` is
+    /// tried first: outside GNOME and KDE (Hyprland, Sway, ...) `xdg-open`
+    /// searches all .desktop files with a shell script, which can take
+    /// seconds, while gio finds the application right away.
+    fn open_default(p: &Path) -> bool {
+        let quiet = |mut c: Command| c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+        let mut gio = Command::new("gio");
+        gio.arg("open").arg(p);
+        if quiet(gio) {
+            return true;
+        }
+        let mut xdg = Command::new("xdg-open");
+        xdg.arg(p);
+        quiet(xdg)
+    }
+
     pub fn open_path(p: &Path) {
-        let mut c = Command::new("xdg-open");
-        c.arg(p);
-        run_detached(c);
+        let p = p.to_path_buf();
+        std::thread::spawn(move || {
+            open_default(&p);
+        });
     }
 
     /// Open the file manager with the item selected (FreeDesktop FileManager1
@@ -313,12 +330,7 @@ mod imp {
                 .map(|s| s.success())
                 .unwrap_or(false);
             if !ok {
-                let _ = Command::new("xdg-open")
-                    .arg(&parent)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                open_default(&parent);
             }
         });
     }

@@ -4,6 +4,7 @@
 use crate::scan::Kind;
 use crate::tree::{Tree, Values};
 use eframe::egui::{pos2, vec2, Rect};
+use std::collections::HashSet;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ItemKind {
@@ -37,8 +38,11 @@ pub struct Item {
     pub chain: u32,
 }
 
-pub struct Params {
+pub struct Params<'a> {
     pub max_depth: u32,
+    /// folders opened one level further by clicking them, even below
+    /// `max_depth`
+    pub expanded: &'a HashSet<u32>,
     /// items smaller than this (in px, per side) are grouped
     pub min_box: f32,
     pub header_h: f32,
@@ -66,7 +70,7 @@ pub fn layout(tree: &Tree, vals: &Values, root: u32, rect: Rect, p: &Params) -> 
 struct Layouter<'a> {
     tree: &'a Tree,
     vals: &'a Values,
-    p: &'a Params,
+    p: &'a Params<'a>,
     out: &'a mut Vec<Item>,
 }
 
@@ -133,7 +137,7 @@ impl Layouter<'_> {
         inner.max.x -= p.pad;
         inner.max.y -= p.pad;
 
-        let can_open = depth < p.max_depth
+        let can_open = (depth < p.max_depth || p.expanded.contains(&id))
             && inner.width() >= p.min_box.max(4.0)
             && inner.height() >= p.min_box.max(4.0)
             && !node.children.is_empty();
