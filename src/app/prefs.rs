@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Remembers view settings in ~/.config/spacemapper/settings.conf
+//! (on Windows: %APPDATA%\\Spacemapper\\settings.conf)
 //! (plain "key = value" lines).
 
 use super::*;
 
 fn path() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| util::home_dir().join(".config"));
-    base.join("spacemapper").join("settings.conf")
+    util::config_dir().join("settings.conf")
 }
 
 impl App {

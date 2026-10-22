@@ -88,7 +88,9 @@ impl FileInfo<'_> {
 }
 
 fn make_pat(s: &str) -> Pat {
-    let s = s.to_lowercase();
+    // paths are matched with '/' on every system, so "\\temp\\" typed on
+    // Windows works the same as "/temp/"
+    let s = s.to_lowercase().replace('\\', "/");
     let path = s.contains('/');
     let glob = if s.contains('*') || s.contains('?') { s.clone() } else { format!("*{s}*") };
     let lead = glob.starts_with('*');

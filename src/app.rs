@@ -258,12 +258,28 @@ impl App {
         }
     }
 
+    /// Whether scans run with administrator rights. On Linux each full-access
+    /// scan asks for the password through pkexec; on Windows the whole program
+    /// runs as administrator after "Restart as administrator".
+    fn elevated(&self) -> bool {
+        if cfg!(windows) { util::is_admin() } else { self.settings.full_access }
+    }
+
+    /// Windows: start an administrator copy (UAC prompt) and close this one.
+    fn restart_as_admin(&mut self, path: Option<PathBuf>, ctx: &egui::Context) {
+        if util::relaunch_as_admin(path.as_deref()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else {
+            self.toast("Could not restart as administrator".to_string());
+        }
+    }
+
     fn begin_scan(&mut self, path: PathBuf, ctx: &egui::Context) {
         if let Some(job) = &self.job {
             job.progress.cancel.store(true, Relaxed);
         }
         self.error = None;
-        self.job = Some(start_job(path, self.settings.cross_fs, self.settings.full_access, None, ctx));
+        self.job = Some(start_job(path, self.settings.cross_fs, self.elevated(), None, ctx));
     }
 
     fn rescan_folder(&mut self, id: u32, ctx: &egui::Context) {
@@ -277,7 +293,7 @@ impl App {
             return;
         }
         let path = tree.path(id);
-        self.job = Some(start_job(path, self.settings.cross_fs, self.settings.full_access, Some(id), ctx));
+        self.job = Some(start_job(path, self.settings.cross_fs, self.elevated(), Some(id), ctx));
     }
 
     fn poll_job(&mut self) {
@@ -1025,7 +1041,7 @@ impl App {
             ui.separator();
             let item = |ui: &mut Ui, ic: &str, text: &str| ui.button(format!("{ic}   {text}")).clicked();
             if !pseudo {
-                if item(ui, icon::FOLDER_OPEN, "Show in file manager") {
+                if item(ui, icon::FOLDER_OPEN, if cfg!(windows) { "Show in Explorer" } else { "Show in file manager" }) {
                     action = Some(Action::Reveal);
                 }
                 if item(ui, icon::ARROW_SQUARE_OUT, if is_dir { "Open folder" } else { "Open file" }) {
@@ -1311,11 +1327,15 @@ impl App {
                             ui.selectable_value(&mut self.settings.age_date, DateKind::Modified, "Modified")
                                 .on_hover_text("When the file contents were last changed. Installed and downloaded files often keep old dates.");
                             ui.selectable_value(&mut self.settings.age_date, DateKind::Opened, "Opened")
-                                .on_hover_text("When the file was last read. Not recorded on drives mounted with noatime.");
+                                .on_hover_text(if cfg!(windows) { "When the file was last read. Windows does not reliably record this." } else { "When the file was last read. Not recorded on drives mounted with noatime." });
                         });
                     if self.settings.age_date == DateKind::Opened && self.tree.as_ref().map(|t| t.no_atime()).unwrap_or(false) {
                         ui.label(RichText::new(icon::WARNING).color(WARN))
-                            .on_hover_text("This drive is mounted with noatime, so open dates are not recorded. Colors fall back to the modified date.");
+                            .on_hover_text(if cfg!(windows) {
+                                "Windows does not reliably record when files are opened. Colors fall back to the modified date."
+                            } else {
+                                "This drive is mounted with noatime, so open dates are not recorded. Colors fall back to the modified date."
+                            });
                     }
                 }
             });
@@ -1414,7 +1434,7 @@ impl App {
                                     (">100mb  <2gb", "size limits (kb, mb, gb, tb)"),
                                     (">1y  <7d", "modified more than a year ago / in the last 7 days"),
                                     ("added>1y  added<7d", "put on this disk or changed (installed, copied, downloaded)"),
-                                    ("opened>1y", "not opened for a year (not on noatime drives)"),
+                                    ("opened>1y", if cfg!(windows) { "not opened for a year (not reliable on Windows)" } else { "not opened for a year (not on noatime drives)" }),
                                     ("empty", "files of 0 bytes"),
                                     ("hidden", "hidden files and files in hidden folders"),
                                     ("", "age units: h, d, w, mo, y"),
@@ -1432,7 +1452,11 @@ impl App {
                 ui.label(RichText::new(format!("{}  {err}", icon::WARNING)).color(WARN));
             } else if self.filter.uses_opened() && self.tree.as_ref().map(|t| t.no_atime()).unwrap_or(false) {
                 ui.label(RichText::new(format!("{}  Open dates not recorded on this drive", icon::WARNING)).color(WARN))
-                    .on_hover_text("The drive is mounted with the noatime option, so the system does not record when files are opened. The \"opened\" filter cannot work here.");
+                    .on_hover_text(if cfg!(windows) {
+                        "Windows does not reliably record when files are opened, so the \"opened\" filter cannot work here."
+                    } else {
+                        "The drive is mounted with the noatime option, so the system does not record when files are opened. The \"opened\" filter cannot work here."
+                    });
             }
             ui.add_space(6.0);
             self.breadcrumbs(ui);
@@ -1468,6 +1492,7 @@ impl App {
             (icon::FILE_ZIP, "Archives", "*.zip;*.7z;*.rar;*.tar;*.gz;*.tgz;*.xz;*.zst;*.bz2;*.lz4"),
             (icon::DISC, "Disk and VM images", "*.iso;*.img;*.qcow2;*.vdi;*.vmdk;*.vhd;*.vhdx;*.raw.xz"),
         ];
+        #[cfg(not(windows))]
         const CLEANUP: &[Preset] = &[
             (icon::BROOM, "Caches", "/.cache/;/cache/;/caches/"),
             (icon::GAME_CONTROLLER, "Shader caches", "/mesa_shader_cache/;/mesa_shader_cache_db/;/shadercache/;/.nv/;/nvidia/glcache/;/dxvk-cache/;/vkd3d-proton.cache"),
@@ -1479,6 +1504,7 @@ impl App {
             (icon::BUG, "Crash dumps", "/var/lib/systemd/coredump/;/var/crash/"),
             (icon::TRASH, "Trash", "/.local/share/trash/"),
         ];
+        #[cfg(not(windows))]
         const APPS: &[Preset] = &[
             (icon::GAME_CONTROLLER, "Steam games", "/steamapps/"),
             (icon::GAME_CONTROLLER, "Wine and Proton prefixes", "/compatdata/;/.wine/;/pfx/drive_c/"),
@@ -1486,6 +1512,32 @@ impl App {
             (icon::PACKAGE, "Snap packages", "/var/lib/snapd/;/snap/"),
             (icon::CUBE, "Containers (Docker, Podman)", "/var/lib/docker/;/var/lib/containers/;/.local/share/containers/"),
             (icon::DESKTOP, "Virtual machines", "/var/lib/libvirt/;/virtualbox vms/;/.local/share/gnome-boxes/;*.qcow2;*.vdi;*.vmdk"),
+        ];
+        #[cfg(windows)]
+        const CLEANUP: &[Preset] = &[
+            (icon::BROOM, "Temporary files", "/appdata/local/temp/;/windows/temp/"),
+            (icon::BROOM, "Caches", "/cache/;/caches/;/cache2/;/inetcache/"),
+            (icon::GAME_CONTROLLER, "Shader caches", "/d3dscache/;/nvidia/dxcache/;/nvidia/glcache/;/amd/dxcache/;/amd/vkcache/;/shadercache/;/steamapps/shadercache/"),
+            (icon::GLOBE, "Browser caches", "/mozilla/firefox/profiles/;/google/chrome/user data/default/cache/;/microsoft/edge/user data/default/cache/;/bravesoftware/brave-browser/user data/default/cache/"),
+            (icon::IMAGES, "Thumbnails", "/microsoft/windows/explorer/thumbcache_"),
+            (icon::PACKAGE, "Windows Update downloads", "/windows/softwaredistribution/download/"),
+            (icon::PACKAGE, "Installer and package caches", "/windows/installer/;/package cache/;/.cargo/registry/;/npm-cache/;/pip/cache/;/nuget/;/.gradle/caches/;/.m2/repository/"),
+            (icon::CODE, "Build and dependency folders", "/node_modules/;/target/;/__pycache__/;/.venv/;/venv/;/build/;/.gradle/;/dist/;/bin/debug/;/obj/"),
+            (icon::SCROLL, "Logs", "*.log;*.etl;/windows/logs/"),
+            (icon::BUG, "Crash dumps", "*.dmp;/crashdumps/;/windows/minidump/;/windows/livekernelreports/"),
+            (icon::HARD_DRIVE, "Page file, hibernation and swap", "pagefile.sys;hiberfil.sys;swapfile.sys"),
+            (icon::TRASH, "Recycle Bin", "/$recycle.bin/"),
+            (icon::CLOCK, "Old Windows installation", "/windows.old/"),
+        ];
+        #[cfg(windows)]
+        const APPS: &[Preset] = &[
+            (icon::GAME_CONTROLLER, "Steam games", "/steamapps/"),
+            (icon::GAME_CONTROLLER, "Epic, GOG, EA and Ubisoft games", "/epic games/;/gog galaxy/games/;/ea games/;/ubisoft game launcher/games/"),
+            (icon::GAME_CONTROLLER, "Xbox app games", "/xboxgames/;/windowsapps/"),
+            (icon::PACKAGE, "Installed programs", "/program files/;/program files (x86)/"),
+            (icon::PACKAGE, "App data", "/appdata/"),
+            (icon::CUBE, "WSL and Docker", "/packages/canonicalgroup;/docker/wsl/;*.vhdx"),
+            (icon::DESKTOP, "Virtual machines", "/virtualbox vms/;/virtual machines/;*.vdi;*.vmdk;*.vhd;*.vhdx;*.qcow2"),
         ];
         const OTHER: &[Preset] = &[(icon::EYE_SLASH, "Hidden files and folders", "hidden")];
 
@@ -1497,7 +1549,11 @@ impl App {
                 for &(ic, label, pat) in list {
                     let disabled = no_atime && pat.contains("opened");
                     let tip = if disabled {
-                        "This drive is mounted with noatime, so it does not record when files are opened.".to_string()
+                        if cfg!(windows) {
+                            "Windows does not reliably record when files are opened.".to_string()
+                        } else {
+                            "This drive is mounted with noatime, so it does not record when files are opened.".to_string()
+                        }
                     } else {
                         pat.replace(';', "  ")
                     };
@@ -1607,14 +1663,19 @@ impl App {
                         let b = egui::Button::new(RichText::new(format!("{}  Rescan with full access", icon::SHIELD_CHECK)).size(12.5).color(ACCENT))
                             .fill(SURFACE2)
                             .corner_radius(CornerRadius::same(8));
-                        rescan_full = ui.add(b).on_hover_text("Requires administrator password").clicked();
+                        let tip = if cfg!(windows) { "Restarts Spacemapper as administrator" } else { "Requires administrator password" };
+                        rescan_full = ui.add(b).on_hover_text(tip).clicked();
                     }
                 }
                 if rescan_full {
-                    self.settings.full_access = true;
                     let p = tree.root_path.clone();
                     let ctx = ui.ctx().clone();
-                    self.begin_scan(p, &ctx);
+                    if cfg!(windows) {
+                        self.restart_as_admin(Some(p), &ctx);
+                    } else {
+                        self.settings.full_access = true;
+                        self.begin_scan(p, &ctx);
+                    }
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1659,16 +1720,43 @@ impl App {
                         .inner_margin(Margin::symmetric(16, 12))
                         .show(ui, |ui| {
                             ui.set_width(width - 32.0);
-                            ui.horizontal(|ui| {
-                                toggle(ui, &mut self.settings.full_access);
-                                ui.add_space(4.0);
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 1.0;
-                                    ui.label(RichText::new(format!("{}  Full access", icon::SHIELD_CHECK)).color(TEXT).font(font_bold(13.5)));
-                                    ui.label(RichText::new("Scan as administrator so system folders are included. Asks for your password.").size(12.0).color(TEXT_DIM));
+                            if cfg!(windows) {
+                                let admin = util::is_admin();
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 1.0;
+                                        ui.label(RichText::new(format!("{}  Full access", icon::SHIELD_CHECK)).color(TEXT).font(font_bold(13.5)));
+                                        let text = if admin {
+                                            "Running as administrator. System folders are included."
+                                        } else {
+                                            "Run as administrator so system folders are included."
+                                        };
+                                        ui.label(RichText::new(text).size(12.0).color(TEXT_DIM));
+                                    });
+                                    if !admin {
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            let b = egui::Button::new(RichText::new(format!("{}  Restart as administrator", icon::SHIELD_CHECK)).size(12.5).color(ACCENT))
+                                                .fill(SURFACE2)
+                                                .corner_radius(CornerRadius::same(8));
+                                            if ui.add(b).clicked() {
+                                                self.restart_as_admin(None, &ctx);
+                                            }
+                                        });
+                                    }
                                 });
-                            });
+                            } else {
+                        ui.horizontal(|ui| {
+                                    toggle(ui, &mut self.settings.full_access);
+                                    ui.add_space(4.0);
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 1.0;
+                                        ui.label(RichText::new(format!("{}  Full access", icon::SHIELD_CHECK)).color(TEXT).font(font_bold(13.5)));
+                                        ui.label(RichText::new("Scan as administrator so system folders are included. Asks for your password.").size(12.0).color(TEXT_DIM));
+                                    });
+                                });
+                            }
                             ui.add_space(6.0);
+                            #[cfg(unix)]
                             ui.horizontal(|ui| {
                                 toggle(ui, &mut self.settings.cross_fs);
                                 ui.add_space(4.0);
@@ -1757,7 +1845,7 @@ impl App {
                                             let r = ui.add(egui::TextEdit::singleline(&mut self.path_input).frame(false).desired_width(width - 260.0));
                                             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                                                 let p = PathBuf::from(self.path_input.trim());
-                                                scan = Some(std::fs::canonicalize(&p).unwrap_or(p));
+                                                scan = Some(util::absolute(&p));
                                             }
                                         });
                                     });
@@ -1770,7 +1858,7 @@ impl App {
                                     .min_size(vec2(92.0, 34.0));
                                 if ui.add(b).clicked() {
                                     let p = PathBuf::from(self.path_input.trim());
-                                    scan = Some(std::fs::canonicalize(&p).unwrap_or(p));
+                                    scan = Some(util::absolute(&p));
                                 }
                             });
                             ui.add_space(4.0);

@@ -35,11 +35,7 @@ pub struct Entry {
 }
 
 pub fn state_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| crate::util::home_dir().join(".local/state"));
-    base.join("spacemapper").join("history")
+    crate::util::state_dir().join("history")
 }
 
 fn key(root: &Path) -> String {

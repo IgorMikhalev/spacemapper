@@ -240,6 +240,11 @@ impl Tree {
     /// True when the scanned filesystem does not record access times, so
     /// "opened" dates are meaningless.
     pub fn no_atime(&self) -> bool {
+        // Windows only updates the last-access time on some drives and
+        // otherwise keeps the date a file was created or last written
+        if cfg!(windows) {
+            return true;
+        }
         self.mount.as_ref().map(|m| m.options.split(',').any(|o| o == "noatime")).unwrap_or(false)
     }
 
@@ -278,7 +283,8 @@ impl Tree {
         let mut dir_paths: Vec<String> = Vec::new();
         if filter.needs_path {
             dir_paths = vec![String::new(); n];
-            dir_paths[self.root as usize] = self.root_path.to_string_lossy().to_lowercase();
+            // filters always use '/' so the same patterns work on Windows
+            dir_paths[self.root as usize] = self.root_path.to_string_lossy().to_lowercase().replace('\\', "/");
             for &i in &order {
                 let node = &self.nodes[i as usize];
                 if i == self.root || !node.is_dir() {

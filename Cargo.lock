@@ -2096,12 +2096,13 @@ dependencies = [
 
 [[package]]
 name = "spacemapper"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "eframe",
  "egui-phosphor",
  "libc",
  "rayon",
+ "windows-sys 0.59.0",
  "xxhash-rust",
 ]
 

@@ -4,7 +4,7 @@
 
 <h1 align="center">Spacemapper</h1>
 
-<p align="center">Disk usage viewer for Linux that shows your files as a treemap.</p>
+<p align="center">Disk usage viewer for Linux and Windows that shows your files as a treemap.</p>
 
 <p align="center">
   <a href="https://github.com/Martin-ii/spacemapper/releases/latest">Download</a> ·
@@ -17,7 +17,7 @@
 
 Spacemapper scans a drive or folder and draws every file and folder as a box. The size of a box matches the space it takes up, so large files and folders stand out right away. Folders contain their subfolders and files, and you can zoom in and out to look at any part in more detail.
 
-It works like SpaceSniffer on Windows. Spacemapper only reads your files: it has no option to delete, move or rename them, so you can look around without risk. The only files it writes are its own settings and scan summaries (see [Files Spacemapper writes](#files-spacemapper-writes)).
+It works like SpaceSniffer. Spacemapper only reads your files: it has no option to delete, move or rename them, so you can look around without risk. The only files it writes are its own settings and scan summaries (see [Files Spacemapper writes](#files-spacemapper-writes)).
 
 ## Features
 
@@ -30,11 +30,11 @@ It works like SpaceSniffer on Windows. Spacemapper only reads your files: it has
 - Colors by top-level folder, file type or age, or plain grayscale
 - Free space and unreadable space shown when scanning a whole drive
 - Full access option to include system folders (asks for your administrator password)
-- Open files or show them in your file manager from the right-click menu
+- Open files or show them in your file manager (or Explorer) from the right-click menu
 - Fast multithreaded scanning; sizes match `du`
 - JSON output (`spacemapper --json FOLDER`) for scripts and other programs
 - Remembers your view settings
-- Runs on Wayland and X11
+- Runs on Linux (Wayland and X11) and Windows 10 and 11
 
 | Duplicates | Changes since an earlier scan |
 |---|---|
@@ -46,9 +46,15 @@ It works like SpaceSniffer on Windows. Spacemapper only reads your files: it has
 
 ## Installation
 
-Spacemapper runs on 64-bit (x86_64) Linux with glibc 2.28 or newer, which covers every distribution released since 2019.
+Spacemapper runs on 64-bit (x86_64) Linux with glibc 2.28 or newer, which covers every distribution released since 2019, and on 64-bit Windows 10 and 11.
 
-### Quick install
+### Windows
+
+Download `Spacemapper-VERSION-windows-x64.exe` from the [Releases](https://github.com/Martin-ii/spacemapper/releases/latest) page and double-click it. Nothing is installed: it is a single program file that you can keep anywhere, for example in your Documents folder. To have it in the Start menu, right-click the file and choose **Pin to Start**. To remove Spacemapper, delete the file.
+
+The program is not signed, so the first time you start it Windows may show "Windows protected your PC". Click **More info**, then **Run anyway**.
+
+### Linux: quick install
 
 Open a terminal and run:
 
@@ -58,7 +64,7 @@ curl -fsSL https://raw.githubusercontent.com/Martin-ii/spacemapper/main/get.sh |
 
 This downloads the latest release and installs it with your package manager on Arch, CachyOS, Manjaro, Debian, Ubuntu, Linux Mint, Fedora and openSUSE (you will be asked for your password). On other distributions it installs Spacemapper for your user in `~/.local`. Run the same command again to update to a newer version. You can [read the script](get.sh) before running it.
 
-### Manual install
+### Linux: manual install
 
 The packages are on the [Releases](https://github.com/Martin-ii/spacemapper/releases/latest) page. The commands below assume the downloaded file is in your Downloads folder.
 
@@ -245,7 +251,7 @@ Age units are h (hours), d (days), w (weeks), mo (months) and y (years). `modifi
 
 Terms can be combined. For example, `*.mkv;*.mp4;>1gb;added>6mo` shows video files over 1 GB that have been on the disk for more than six months.
 
-The **Sort** menu groups the ready-made filters into Size, Age, File types, Cleanup candidates (caches, shader caches, browser caches, thumbnails, package caches, build folders, logs, crash dumps, trash), Apps and games (Steam, Wine and Proton prefixes, Flatpak, Snap, containers, virtual machines) and Other.
+The **Sort** menu groups the ready-made filters into Size, Age, File types, Cleanup candidates (caches, shader caches, browser caches, thumbnails, package caches, build folders, logs, crash dumps, trash), Apps and games (Steam, Wine and Proton prefixes, Flatpak, Snap, containers, virtual machines) and Other. On Windows the cleanup and app filters cover Windows folders instead, such as temporary files, Windows Update downloads, the Recycle Bin, `Windows.old`, the page file, game launchers and WSL.
 
 ### Dates
 
@@ -253,7 +259,9 @@ Every file has three dates, and the age filters and colors can use any of them:
 
 - **Modified**: when the contents last changed. Files from packages, downloads and archives usually keep the date their author gave them, so a program you installed today can have a modified date from years ago.
 - **Added**: when the file was put on this disk or last changed, whichever is later. This is usually what you want for "old files I no longer need", and it is the default for the age colors.
-- **Opened**: when the file was last read. Linux only records this when the drive is mounted without the `noatime` option. Many systems use `noatime`, especially on btrfs. You can check with `findmnt -no OPTIONS /`. Spacemapper detects it and shows a warning instead of wrong results.
+- **Opened**: when the file was last read. Linux only records this when the drive is mounted without the `noatime` option. Many systems use `noatime`, especially on btrfs. You can check with `findmnt -no OPTIONS /`. Spacemapper detects it and shows a warning instead of wrong results. Windows does not reliably record this date either, so the "opened" filters are turned off there.
+
+On Windows, **Added** uses the date the file was created on this drive, which is when it was copied, downloaded or installed.
 
 ### Free and unknown space
 
@@ -264,7 +272,9 @@ When you scan a whole drive, two extra boxes appear:
 
 ### Full access
 
-Some folders, such as `/root` and parts of `/var`, can only be read by the administrator. To include them, turn on **Full access** on the start screen before scanning, or click **Rescan with full access** in the status bar after a scan.
+On Windows, click **Restart as administrator** on the start screen, or **Rescan with full access** in the status bar after a scan. Windows asks for permission and Spacemapper starts again with administrator rights. Other users' folders and protected system folders are then included.
+
+On Linux, some folders, such as `/root` and parts of `/var`, can only be read by the administrator. To include them, turn on **Full access** on the start screen before scanning, or click **Rescan with full access** in the status bar after a scan.
 
 Spacemapper then asks for your password through polkit (`pkexec`). Only the scanning part runs with administrator rights; the window itself keeps running as your user.
 
@@ -287,6 +297,8 @@ spacemapper --json ~/Downloads > downloads.json
 spacemapper --json / --max-depth 2
 ```
 
+On Windows: `spacemapper.exe --json C:\Users\you\Downloads > downloads.json`.
+
 prints the scan as JSON instead of opening the window. Every entry has `name`, `type` (`dir`, `file`, `link` or `other`), `size` (bytes on disk), `apparent` (file length), and the dates `modified`, `added` and `opened` as Unix timestamps. Folders also have `files` (number of files below) and `children`, sorted largest first; folders that could not be read have `"unreadable": true`. The top level adds `path`, `scanned` and, for whole filesystems, `filesystem` with `total`, `used` and `free`. `--max-depth N` lists entries only N levels deep (deeper folders are still counted in the sizes), and `--cross` includes other mounted filesystems.
 
 ## Files Spacemapper writes
@@ -298,6 +310,8 @@ Spacemapper never changes your files. It writes only these:
 | `~/.config/spacemapper/settings.conf` | view settings (colors, detail, side list tab) |
 | `~/.local/state/spacemapper/history/` | folder size summaries for the Changes tab, the last 10 per scanned folder |
 
+On Windows the same files are in `%APPDATA%\Spacemapper\settings.conf` and `%LOCALAPPDATA%\Spacemapper\history\`.
+
 Delete either at any time to reset it.
 
 ## How sizes are counted
@@ -308,6 +322,7 @@ Delete either at any time to reset it.
 - Btrfs subvolumes on the same drive, such as `@` and `@home`, are treated as one filesystem, so scanning `/` includes `/home`.
 - Btrfs snapshot folders (`.snapshots` and Timeshift) are skipped, because snapshots share most of their data with the live system and would otherwise be counted several times.
 - Virtual filesystems such as `/proc` and `/sys` are never scanned.
+- On Windows, sizes on disk are rounded up to whole 4 KB clusters, and OneDrive files that are only stored online count as 0. Junctions and symbolic links (such as `C:\Documents and Settings`) are not followed. NTFS compression and hard links are not taken into account, so a compressed folder shows its full size.
 
 ## Building from source
 
@@ -331,6 +346,8 @@ cargo build --release
 ./target/release/spacemapper
 ```
 
+On Windows, install Rust with [rustup](https://rustup.rs) (it also sets up the Visual Studio Build Tools it needs), then run the same `git clone` and `cargo build --release` commands in a terminal. The program is `target\release\spacemapper.exe`.
+
 ### Arch package from source
 
 ```sh
@@ -341,7 +358,7 @@ makepkg -si
 
 ### Release packages
 
-`packaging/build-packages.sh` builds the AppImage, .deb, .rpm, Arch package and tar.gz into `dist/`. It needs `cargo-zigbuild` with `zig` (used to build a binary that runs on older glibc versions), `cargo-generate-rpm`, `dpkg-deb`, `appimagetool` and Python with the `zstandard` module. The GitHub Actions workflow in `.github/workflows/release.yml` runs this script and tests the packages on Debian 12 and 13, Ubuntu 22.04 and 24.04, Fedora, openSUSE and Arch.
+`packaging/build-packages.sh` builds the AppImage, .deb, .rpm, Arch package and tar.gz into `dist/`. It needs `cargo-zigbuild` with `zig` (used to build a binary that runs on older glibc versions), `cargo-generate-rpm`, `dpkg-deb`, `appimagetool` and Python with the `zstandard` module. The GitHub Actions workflow in `.github/workflows/release.yml` runs this script, tests the packages on Debian 12 and 13, Ubuntu 22.04 and 24.04, Fedora, openSUSE and Arch, and builds and tests the Windows program on Windows.
 
 ## License
 

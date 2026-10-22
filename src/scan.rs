@@ -11,7 +11,6 @@ use crate::util::{self, Mount};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -127,14 +126,15 @@ pub fn scan(path: &Path, cross: bool, progress: Arc<Progress>) -> ScanOutput {
 
 fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode {
     let p = &ctx.progress;
+    let m = util::meta(md);
     let mut node = TNode {
         name,
         kind: Kind::Dir,
-        alloc: md.blocks() * 512,
-        apparent: md.size(),
-        mtime: md.mtime(),
-        ctime: md.ctime(),
-        atime: md.atime(),
+        alloc: m.alloc,
+        apparent: m.apparent,
+        mtime: m.mtime,
+        ctime: m.ctime,
+        atime: m.atime,
         flags: 0,
         children: Vec::new(),
     };
@@ -156,7 +156,7 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
             return node;
         }
     };
-    let dev = md.dev();
+    let dev = m.dev;
     let mut subdirs: Vec<(PathBuf, Box<str>, fs::Metadata)> = Vec::new();
     for ent in rd {
         let Ok(ent) = ent else {
@@ -181,11 +181,12 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
         } else {
             Kind::Other
         };
-        let mut alloc = emd.blocks() * 512;
-        let mut apparent = emd.size();
+        let em = util::meta(&emd);
+        let mut alloc = em.alloc;
+        let mut apparent = em.apparent;
         let mut flags = 0;
-        if emd.nlink() > 1 && kind == Kind::File {
-            let fresh = ctx.seen.lock().map(|mut s| s.insert((emd.dev(), emd.ino()))).unwrap_or(true);
+        if em.nlink > 1 && kind == Kind::File {
+            let fresh = ctx.seen.lock().map(|mut s| s.insert((em.dev, em.ino))).unwrap_or(true);
             if !fresh {
                 alloc = 0;
                 apparent = 0;
@@ -199,9 +200,9 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
             kind,
             alloc,
             apparent,
-            mtime: emd.mtime(),
-        ctime: emd.ctime(),
-        atime: emd.atime(),
+            mtime: em.mtime,
+            ctime: em.ctime,
+            atime: em.atime,
             flags,
             children: Vec::new(),
         });
@@ -210,7 +211,8 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
     let sub: Vec<TNode> = subdirs
         .into_par_iter()
         .map(|(sp, sname, smd)| {
-            if is_snapshot_dir(&sname, &smd) {
+            let sm = util::meta(&smd);
+            if is_snapshot_dir(&sname, sm.ino) {
                 // Snapshots share their data with the live system; scanning them
                 // would count the same files again for every snapshot.
                 TNode {
@@ -218,22 +220,22 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
                     kind: Kind::Dir,
                     alloc: 0,
                     apparent: 0,
-                    mtime: smd.mtime(),
-        ctime: smd.ctime(),
-        atime: smd.atime(),
+                    mtime: sm.mtime,
+                    ctime: sm.ctime,
+                    atime: sm.atime,
                     flags: F_SNAPSHOTS,
                     children: Vec::new(),
                 }
-            } else if smd.dev() != dev && !ctx.may_enter(&sp) {
+            } else if sm.dev != dev && !ctx.may_enter(&sp) {
                 p.skipped_mounts.fetch_add(1, Relaxed);
                 TNode {
                     name: sname,
                     kind: Kind::Dir,
                     alloc: 0,
                     apparent: 0,
-                    mtime: smd.mtime(),
-        ctime: smd.ctime(),
-        atime: smd.atime(),
+                    mtime: sm.mtime,
+                    ctime: sm.ctime,
+                    atime: sm.atime,
                     flags: F_MOUNT,
                     children: Vec::new(),
                 }
@@ -248,8 +250,8 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
 
 /// btrfs subvolume roots always have inode 256; snapper / timeshift keep their
 /// snapshots in subvolumes with these names.
-fn is_snapshot_dir(name: &str, md: &fs::Metadata) -> bool {
-    matches!(name, ".snapshots" | "timeshift-btrfs" | "@snapshots") && md.ino() == 256
+fn is_snapshot_dir(name: &str, ino: u64) -> bool {
+    matches!(name, ".snapshots" | "timeshift-btrfs" | "@snapshots") && ino == 256
 }
 
 // ---------------------------------------------------------------- full access
@@ -259,7 +261,10 @@ fn is_snapshot_dir(name: &str, md: &fs::Metadata) -> bool {
 // scanner above and streams the result back through a pipe; it never writes
 // any file. The GUI itself keeps running as your normal user.
 
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Read, Write};
+#[cfg(unix)]
+use std::io::{BufRead, BufReader};
+#[cfg(unix)]
 use std::process::{Command, Stdio};
 
 fn write_tree(w: &mut impl Write, n: &TNode) -> io::Result<()> {
@@ -284,12 +289,14 @@ fn write_tree(w: &mut impl Write, n: &TNode) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn read_exact<const N: usize>(r: &mut impl Read) -> io::Result<[u8; N]> {
     let mut b = [0u8; N];
     r.read_exact(&mut b)?;
     Ok(b)
 }
 
+#[cfg(unix)]
 fn read_tree(r: &mut impl Read) -> io::Result<TNode> {
     let [kind, flags] = read_exact::<2>(r)?;
     let alloc = u64::from_le_bytes(read_exact(r)?);
@@ -379,7 +386,15 @@ pub fn run_helper(path: &Path, cross: bool) -> i32 {
     0
 }
 
+/// On Windows the whole program is restarted as administrator instead (see
+/// util::relaunch_as_admin), so a normal scan already has full access.
+#[cfg(windows)]
+pub fn scan_elevated(path: &Path, cross: bool, progress: Arc<Progress>) -> ScanOutput {
+    scan(path, cross, progress)
+}
+
 /// Run a scan through `pkexec` with administrator rights. Blocks until done.
+#[cfg(unix)]
 pub fn scan_elevated(path: &Path, cross: bool, progress: Arc<Progress>) -> ScanOutput {
     let fail = |msg: String| ScanOutput { root: None, error: Some(msg), cancelled: false };
     let exe = match std::env::current_exe() {

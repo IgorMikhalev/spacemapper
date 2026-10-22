@@ -56,6 +56,9 @@ pub fn install_fonts(ctx: &egui::Context) {
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\malgun.ttf",
     ];
     let mut fallbacks = Vec::new();
     for (i, path) in candidates.iter().enumerate() {

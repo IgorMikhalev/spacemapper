@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Spacemapper: treemap disk usage viewer.
 
+// no console window on Windows
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod app;
 mod dupes;
 mod export;
@@ -21,6 +24,9 @@ pub const APP_ID: &str = "spacemapper";
 
 fn main() -> eframe::Result<()> {
     let mut start: Option<PathBuf> = None;
+    if std::env::args().len() > 1 {
+        util::attach_console();
+    }
     for a in std::env::args().skip(1) {
         match a.as_str() {
             "-h" | "--help" => {
@@ -72,7 +78,7 @@ fn main() -> eframe::Result<()> {
                     eprintln!("Usage: spacemapper --json FOLDER [--max-depth N] [--cross]");
                     std::process::exit(2);
                 };
-                let p = std::fs::canonicalize(&p).unwrap_or(p);
+                let p = util::absolute(&p);
                 std::process::exit(export::run(&p, max_depth, cross));
             }
             "-V" | "--version" => {
@@ -81,7 +87,7 @@ fn main() -> eframe::Result<()> {
             }
             _ => {
                 let p = PathBuf::from(&a);
-                start = Some(std::fs::canonicalize(&p).unwrap_or(p));
+                start = Some(util::absolute(&p));
             }
         }
     }

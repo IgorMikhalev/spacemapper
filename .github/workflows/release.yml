@@ -1,4 +1,5 @@
-# Builds the packages and tests them on several distributions.
+# Builds the Linux packages and the Windows program, and tests them on
+# several Linux distributions and on Windows.
 #
 # - On every push and pull request: build and test.
 # - When a tag like v0.4.0 is pushed: also create a GitHub release with the
@@ -43,6 +44,36 @@ jobs:
           name: packages
           path: dist/*
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+
+      - name: Run tests
+        run: cargo test --release --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Check that it runs
+        shell: bash
+        run: ./target/release/spacemapper.exe --version
+
+      - name: Collect
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          mkdir -p dist
+          cp target/release/spacemapper.exe "dist/Spacemapper-$v-windows-x64.exe"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows
+          path: dist/*
+
   test:
     needs: build
     runs-on: ubuntu-24.04
@@ -79,7 +110,7 @@ jobs:
           test -f /usr/share/icons/hicolor/256x256/apps/spacemapper.png
 
   release:
-    needs: [build, test]
+    needs: [build, test, windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
@@ -87,6 +118,12 @@ jobs:
         with:
           name: packages
           path: dist
+      - uses: actions/download-artifact@v7
+        with:
+          name: windows
+          path: dist
+      - name: Checksums
+        run: cd dist && rm -f SHA256SUMS && sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
