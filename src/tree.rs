@@ -2,7 +2,8 @@
 //! Flat arena holding the scanned tree, plus size aggregation with filters.
 
 use crate::filter::{FileInfo, Filter};
-use crate::scan::{Kind, TNode, F_DENIED};
+use crate::scan::{Kind, TNode, F_DENIED, F_KEEP};
+use std::collections::HashMap;
 use crate::util::{self, Mount, Space};
 use std::path::{Path, PathBuf};
 
@@ -190,6 +191,14 @@ impl Tree {
                 }
             }
         }
+        // detached: no longer reachable from the root (see `is_live`)
+        self.nodes[id as usize].parent = NONE;
+        self.refresh_space();
+        new
+    }
+
+    /// Read the filesystem's free and used space again.
+    pub fn refresh_space(&mut self) {
         self.space = util::fs_space(&self.root_path);
         if self.free_id != NONE {
             if let Some(s) = self.space {
@@ -199,7 +208,119 @@ impl Tree {
             }
         }
         self.update_unknown();
-        new
+    }
+
+    /// Merge a fresh read of folder `id` (from `scan::refresh`). Entries that
+    /// are still there keep their node id; `F_KEEP` folders keep their
+    /// subtree. Removed entries are detached from the tree. Call
+    /// `refresh_space` afterwards.
+    pub fn merge_dir(&mut self, id: u32, t: TNode) {
+        let old: HashMap<Box<str>, u32> = self.nodes[id as usize]
+            .children
+            .iter()
+            .filter(|&&c| !self.nodes[c as usize].is_pseudo())
+            .map(|&c| (self.nodes[c as usize].name.clone(), c))
+            .collect();
+        let pseudo: Vec<u32> =
+            self.nodes[id as usize].children.iter().copied().filter(|&c| self.nodes[c as usize].is_pseudo()).collect();
+        let TNode { alloc, apparent, mtime, ctime, atime, children, .. } = t;
+        let mut ids = Vec::with_capacity(children.len() + pseudo.len());
+        let mut kept = std::collections::HashSet::new();
+        for c in children {
+            let prev = old.get(&c.name).copied().filter(|&o| {
+                let n = &self.nodes[o as usize];
+                // a folder is kept as it is; a file is updated in place
+                if c.flags & F_KEEP != 0 { n.is_dir() } else { !n.is_dir() && c.kind != Kind::Dir }
+            });
+            match prev {
+                Some(o) => {
+                    let n = &mut self.nodes[o as usize];
+                    n.alloc = c.alloc;
+                    n.apparent = c.apparent;
+                    n.mtime = c.mtime;
+                    n.ctime = c.ctime;
+                    n.atime = c.atime;
+                    if c.flags & F_KEEP == 0 {
+                        n.kind = c.kind;
+                        n.flags = c.flags;
+                    }
+                    kept.insert(o);
+                    ids.push(o);
+                }
+                // F_KEEP without a folder to keep can only happen if the tree
+                // changed in between; it shows as an empty folder until the
+                // next change
+                None => ids.push(self.add(TNode { flags: c.flags & !F_KEEP, ..c }, id)),
+            }
+        }
+        for (_, o) in old {
+            if !kept.contains(&o) {
+                self.nodes[o as usize].parent = NONE;
+            }
+        }
+        ids.extend(pseudo);
+        let n = &mut self.nodes[id as usize];
+        n.children = ids;
+        n.alloc = alloc;
+        n.apparent = apparent;
+        n.mtime = mtime;
+        n.ctime = ctime;
+        n.atime = atime;
+    }
+
+    /// The node at `path`, or the deepest folder on the way to it that is in
+    /// the tree. None if `path` is outside the scanned folder.
+    pub fn nearest(&self, path: &Path) -> Option<(u32, bool)> {
+        let rel = path.strip_prefix(&self.root_path).ok()?;
+        let mut id = self.root;
+        for part in rel.components() {
+            let name = part.as_os_str().to_string_lossy();
+            let next = self.nodes[id as usize]
+                .children
+                .iter()
+                .copied()
+                .find(|&c| !self.nodes[c as usize].is_pseudo() && *self.nodes[c as usize].name == *name);
+            match next {
+                Some(c) => id = c,
+                None => return Some((id, false)),
+            }
+        }
+        Some((id, true))
+    }
+
+    /// The biggest files in the tree with at least `min` bytes on disk,
+    /// largest first, at most `max` of them.
+    pub fn big_files(&self, min: u64, max: usize) -> Vec<u32> {
+        let mut out: Vec<u32> = Vec::new();
+        let mut stack = vec![self.root];
+        while let Some(i) = stack.pop() {
+            let n = &self.nodes[i as usize];
+            if n.kind == Kind::File && n.alloc >= min {
+                out.push(i);
+            }
+            stack.extend_from_slice(&n.children);
+        }
+        out.sort_unstable_by(|a, b| self.nodes[*b as usize].alloc.cmp(&self.nodes[*a as usize].alloc));
+        out.truncate(max);
+        out
+    }
+
+    /// Update a file's sizes and dates from a fresh stat. Returns whether
+    /// anything changed.
+    pub fn update_file(&mut self, id: u32, m: &util::Meta) -> bool {
+        let n = &mut self.nodes[id as usize];
+        let changed = (n.alloc, n.apparent, n.mtime, n.ctime) != (m.alloc, m.apparent, m.mtime, m.ctime);
+        n.alloc = m.alloc;
+        n.apparent = m.apparent;
+        n.mtime = m.mtime;
+        n.ctime = m.ctime;
+        n.atime = m.atime;
+        changed
+    }
+
+    /// False for nodes that were removed by a rescan or live update.
+    pub fn is_live(&self, id: u32) -> bool {
+        (id as usize) < self.nodes.len() && self.is_within(id, self.root)
     }
 
     /// True if `id` is `anc` or lies below it.
@@ -378,3 +499,72 @@ impl Tree {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scan::{self, Progress, Refresh};
+    use std::fs;
+    use std::sync::Arc;
+
+    #[test]
+    fn live_refresh_keeps_ids_and_drops_removed() {
+        let dir = std::env::temp_dir().join(format!("spacemapper-live-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("big/inner")).unwrap();
+        fs::create_dir_all(dir.join("keep")).unwrap();
+        fs::write(dir.join("big/inner/a"), vec![1u8; 100_000]).unwrap();
+        fs::write(dir.join("keep/b"), vec![1u8; 50_000]).unwrap();
+        fs::write(dir.join("c"), b"x").unwrap();
+
+        let out = scan::scan(&dir, false, Arc::new(Progress::default()));
+        let mut tree = Tree::from_scan(out.root.unwrap(), &dir);
+        let keep = tree.nearest(&dir.join("keep")).unwrap().0;
+        let big = tree.nearest(&dir.join("big")).unwrap().0;
+        let c = tree.nearest(&dir.join("c")).unwrap().0;
+
+        // delete a folder, grow a file, add a new folder
+        fs::remove_dir_all(dir.join("big")).unwrap();
+        fs::write(dir.join("c"), vec![1u8; 20_000]).unwrap();
+        fs::create_dir_all(dir.join("new")).unwrap();
+        fs::write(dir.join("new/d"), b"y").unwrap();
+
+        let known = [Box::<str>::from("big"), "keep".into()].into_iter().collect();
+        let res = scan::refresh(&dir, false, vec![Refresh { path: dir.clone(), keep: known }]);
+        let (_, node) = res.into_iter().next().unwrap();
+        tree.merge_dir(tree.root, node.unwrap());
+
+        assert!(tree.is_live(keep));
+        assert!(tree.is_live(c));
+        assert!(!tree.is_live(big));
+        assert_eq!(tree.nearest(&dir.join("keep")), Some((keep, true)));
+        assert_eq!(tree.nodes[c as usize].apparent, 20_000);
+        assert_eq!(tree.nearest(&dir.join("big/inner")), Some((tree.root, false)));
+        let new = tree.nearest(&dir.join("new/d")).unwrap();
+        assert!(new.1);
+        // the kept folder still has its file
+        assert_eq!(tree.nodes[keep as usize].children.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn big_files_are_checked_again() {
+        let dir = std::env::temp_dir().join(format!("spacemapper-big-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/big"), vec![1u8; 300_000]).unwrap();
+        fs::write(dir.join("small"), b"x").unwrap();
+        let out = scan::scan(&dir, false, Arc::new(Progress::default()));
+        let mut tree = Tree::from_scan(out.root.unwrap(), &dir);
+        let big = tree.nearest(&dir.join("sub/big")).unwrap().0;
+
+        assert_eq!(tree.big_files(100_000, 10), vec![big]);
+        // shrink it without the tree knowing, as a sparse disk image does
+        fs::OpenOptions::new().write(true).open(dir.join("sub/big")).unwrap().set_len(1000).unwrap();
+        let md = fs::symlink_metadata(dir.join("sub/big")).unwrap();
+        assert!(tree.update_file(big, &util::meta(&md)));
+        assert_eq!(tree.nodes[big as usize].apparent, 1000);
+        assert!(!tree.update_file(big, &util::meta(&md)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

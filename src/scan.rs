@@ -29,6 +29,7 @@ pub const F_DENIED: u8 = 1; // directory could not be read
 pub const F_MOUNT: u8 = 2; // mount point of another filesystem, not entered
 pub const F_HARDLINK_DUP: u8 = 4; // file already counted through another hardlink
 pub const F_SNAPSHOTS: u8 = 8; // btrfs snapshot folder, not entered (would count data many times)
+pub const F_KEEP: u8 = 16; // live refresh: folder already in the tree, not read again
 
 pub struct TNode {
     pub name: Box<str>,
@@ -103,31 +104,66 @@ pub fn scan(path: &Path, cross: bool, progress: Arc<Progress>) -> ScanOutput {
     if !md.is_dir() {
         return ScanOutput { root: None, error: Some(format!("{} is not a folder", path.display())), cancelled: false };
     }
+    let ctx = make_ctx(path, cross, progress.clone());
+    let name: Box<str> = path.to_string_lossy().into();
+    let root = pool().install(|| scan_dir(&ctx, path, name, &md, None));
+    ScanOutput { root: Some(root), error: None, cancelled: progress.cancel.load(Relaxed) }
+}
+
+fn make_ctx(root: &Path, cross: bool, progress: Arc<Progress>) -> Ctx {
     let mounts = util::read_mounts();
-    let (root_source, root_fstype) = util::mount_of(&mounts, path)
+    let (root_source, root_fstype) = util::mount_of(&mounts, root)
         .map(|m| (m.source.clone(), m.fstype.clone()))
         .unwrap_or_default();
-    let ctx = Ctx {
-        progress: progress.clone(),
+    Ctx {
+        progress,
         seen: Mutex::new(HashSet::new()),
         mounts: util::mount_map(&mounts),
         root_source,
         root_fstype,
         cross,
-        root: path.to_path_buf(),
-    };
+        root: root.to_path_buf(),
+    }
+}
+
+fn pool() -> rayon::ThreadPool {
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let pool = rayon::ThreadPoolBuilder::new()
+    rayon::ThreadPoolBuilder::new()
         .num_threads((threads * 2).clamp(4, 32))
         .stack_size(16 * 1024 * 1024)
         .build()
-        .expect("thread pool");
-    let name: Box<str> = path.to_string_lossy().into();
-    let root = pool.install(|| scan_dir(&ctx, path, name, &md));
-    ScanOutput { root: Some(root), error: None, cancelled: progress.cancel.load(Relaxed) }
+        .expect("thread pool")
 }
 
-fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode {
+/// A folder to read again for live updates. Subfolders named in `keep` are
+/// already in the tree and come back as empty `F_KEEP` entries; all other
+/// subfolders are scanned in full.
+pub struct Refresh {
+    pub path: PathBuf,
+    pub keep: HashSet<Box<str>>,
+}
+
+/// Read the given folders again (below the scan root `root`). A folder that
+/// is gone or can no longer be read gives `None`.
+pub fn refresh(root: &Path, cross: bool, dirs: Vec<Refresh>) -> Vec<(PathBuf, Option<TNode>)> {
+    let ctx = make_ctx(root, cross, Arc::new(Progress::default()));
+    let pool = pool();
+    dirs.into_iter()
+        .map(|d| {
+            // only the scan root itself may be reached through a symlink
+            let md = if d.path == root { fs::metadata(&d.path) } else { fs::symlink_metadata(&d.path) };
+            let node = md.ok().filter(|md| md.is_dir()).and_then(|md| {
+                let name: Box<str> = d.path.file_name().map(|n| n.to_string_lossy().into()).unwrap_or_default();
+                let n = pool.install(|| scan_dir(&ctx, &d.path, name, &md, Some(&d.keep)));
+                // unreadable now (e.g. scanned with full access): keep what we have
+                (n.flags & F_DENIED == 0).then_some(n)
+            });
+            (d.path, node)
+        })
+        .collect()
+}
+
+fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata, keep: Option<&HashSet<Box<str>>>) -> TNode {
     let p = &ctx.progress;
     let m = util::meta(md);
     let mut node = TNode {
@@ -215,7 +251,19 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
         .into_par_iter()
         .map(|(sp, sname, smd)| {
             let sm = util::meta(&smd);
-            if is_snapshot_dir(&sname, sm.ino) {
+            if keep.is_some_and(|k| k.contains(&sname)) {
+                TNode {
+                    name: sname,
+                    kind: Kind::Dir,
+                    alloc: sm.alloc,
+                    apparent: sm.apparent,
+                    mtime: sm.mtime,
+                    ctime: sm.ctime,
+                    atime: sm.atime,
+                    flags: F_KEEP,
+                    children: Vec::new(),
+                }
+            } else if is_snapshot_dir(&sname, sm.ino) {
                 // Snapshots share their data with the live system; scanning them
                 // would count the same files again for every snapshot.
                 TNode {
@@ -243,7 +291,7 @@ fn scan_dir(ctx: &Ctx, path: &Path, name: Box<str>, md: &fs::Metadata) -> TNode 
                     children: Vec::new(),
                 }
             } else {
-                scan_dir(ctx, &sp, sname, &smd)
+                scan_dir(ctx, &sp, sname, &smd, None)
             }
         })
         .collect();

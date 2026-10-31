@@ -7,10 +7,11 @@ mod tools;
 
 use crate::filter::Filter;
 use crate::layout::{self, Item, ItemKind, Params};
-use crate::scan::{self, Kind, Progress, ScanOutput, F_DENIED, F_HARDLINK_DUP, F_MOUNT, F_SNAPSHOTS};
+use crate::scan::{self, Kind, Progress, ScanOutput, TNode, F_DENIED, F_HARDLINK_DUP, F_MOUNT, F_SNAPSHOTS};
 use crate::theme::{self, *};
 use crate::tree::{DateKind, SizeMode, Tree, Values, NONE};
 use crate::util::{self, fmt_count, fmt_size, Mount};
+use crate::watch;
 use eframe::egui::{
     self, epaint::RectShape, epaint::TessellationOptions, epaint::Tessellator, pos2, vec2, Align, Align2, Color32,
     CornerRadius, FontId, Galley, Key, Layout, Margin, Mesh, PointerButton, Pos2, Rect, Response, RichText, Sense,
@@ -26,6 +27,14 @@ use std::time::{Duration, Instant};
 
 const HEADER_H: f32 = 21.0;
 const DEPTH_UNLIMITED: u32 = 16;
+/// how long the map takes to slide into its new shape after a live update
+const ANIM_TIME: f32 = 0.25;
+/// Live updates also check the biggest files this often: disk images of
+/// virtual machines (Docker.raw, ...) grow and shrink without the system
+/// reporting a change.
+const BIG_FILE_CHECK: Duration = Duration::from_secs(10);
+const BIG_FILE_MIN: u64 = 256 << 20;
+const BIG_FILE_COUNT: usize = 500;
 const DETAIL_LEVELS: [(f32, &str); 5] = [
     (36.0, "Coarse"),
     (20.0, "Low"),
@@ -67,6 +76,30 @@ fn start_job(path: PathBuf, cross: bool, elevated: bool, target: Option<u32>, ct
     ScanJob { path, target, progress, rx, started: Instant::now(), elevated, fs_used }
 }
 
+enum LiveResult {
+    /// folders read again after the watcher saw changes in them
+    Dirs(Vec<(PathBuf, Option<TNode>)>),
+    /// the biggest files, checked again
+    Files(Vec<(u32, PathBuf, Option<util::Meta>)>),
+}
+
+struct LiveJob {
+    rx: Receiver<LiveResult>,
+}
+
+fn start_live_job(ctx: &egui::Context, work: impl FnOnce() -> LiveResult + Send + 'static) -> LiveJob {
+    let (tx, rx) = mpsc::channel();
+    let ctx = ctx.clone();
+    std::thread::Builder::new()
+        .name("refresh".into())
+        .spawn(move || {
+            let _ = tx.send(work());
+            ctx.request_repaint();
+        })
+        .expect("spawn refresh thread");
+    LiveJob { rx }
+}
+
 // ------------------------------------------------------------------ settings
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,6 +120,8 @@ struct Settings {
     /// which date the age colors use
     age_date: DateKind,
     cross_fs: bool,
+    /// watch the scanned folder and update the map when files change
+    live: bool,
     full_access: bool,
     /// macOS: show the Full Disk Access window at launch when access is missing
     ask_full_disk_access: bool,
@@ -110,6 +145,8 @@ struct CacheKey {
 struct Label {
     pos: Pos2,
     galley: Arc<Galley>,
+    /// index of the item it belongs to
+    item: usize,
 }
 
 struct LayoutCache {
@@ -117,6 +154,39 @@ struct LayoutCache {
     items: Vec<Item>,
     mesh: Arc<Mesh>,
     labels: Vec<Label>,
+}
+
+/// The map sliding from its old layout to the new one after a live update.
+struct Anim {
+    /// old rectangle of each new item that moved, by item index; None for
+    /// items that are new
+    from: Vec<Option<Rect>>,
+    /// items that did not move; they are drawn as they are, with labels
+    still: Vec<bool>,
+    /// old items that are not in the new layout; they shrink away
+    gone: Vec<Item>,
+    start: Instant,
+}
+
+impl Anim {
+    /// None when nothing moved visibly (the disk changes all the time, so
+    /// most live updates change nothing on screen).
+    fn new(old: Vec<Item>, new: &[Item]) -> Option<Anim> {
+        let old_rects: HashMap<(u32, bool), Rect> = old.iter().map(|it| (anim_key(it), it.rect)).collect();
+        let keys: HashSet<(u32, bool)> = new.iter().map(anim_key).collect();
+        let same = |a: Rect, b: Rect| (a.min - b.min).length() < 0.5 && (a.max - b.max).length() < 0.5;
+        let from: Vec<Option<Rect>> = new.iter().map(|it| old_rects.get(&anim_key(it)).copied()).collect();
+        let still: Vec<bool> = new.iter().zip(&from).map(|(it, f)| f.is_some_and(|r| same(r, it.rect))).collect();
+        let gone: Vec<Item> = old.into_iter().filter(|it| !keys.contains(&anim_key(it))).collect();
+        if gone.is_empty() && still.iter().all(|&s| s) {
+            return None;
+        }
+        Some(Anim { from, still, gone, start: Instant::now() })
+    }
+}
+
+fn anim_key(it: &Item) -> (u32, bool) {
+    (it.node, it.kind == ItemKind::Group)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -151,6 +221,12 @@ pub struct App {
     vals: Values,
     ver: u64,
     job: Option<ScanJob>,
+    watcher: Option<watch::Watcher>,
+    live_job: Option<LiveJob>,
+    last_big_check: Instant,
+    /// layout before the last live update, to slide from
+    anim_from: Option<(CacheKey, Vec<Item>)>,
+    anim: Option<Anim>,
     last_scan: Option<(Duration, u64, bool)>,
     /// the current tree was scanned with full access
     scanned_elevated: bool,
@@ -209,6 +285,11 @@ impl App {
             vals: Values { size: Vec::new(), files: Vec::new() },
             ver: 0,
             job: None,
+            watcher: None,
+            live_job: None,
+            last_big_check: Instant::now(),
+            anim_from: None,
+            anim: None,
             last_scan: None,
             scanned_elevated: false,
             error: None,
@@ -227,6 +308,7 @@ impl App {
                 color: ColorMode::Sections,
                 age_date: DateKind::Added,
                 cross_fs: false,
+                live: true,
                 full_access: false,
                 ask_full_disk_access: true,
             },
@@ -418,6 +500,144 @@ impl App {
                 self.update_history_vals();
             }
         }
+        self.recompute();
+    }
+
+    /// Live updates: keep a watcher on the scanned folder, read changed
+    /// folders again in the background and merge them into the tree.
+    fn poll_live(&mut self, ctx: &egui::Context) {
+        let want = if self.settings.live { self.tree.as_ref().map(|t| t.root_path.clone()) } else { None };
+        if self.watcher.as_ref().map(|w| &w.root) != want.as_ref() {
+            self.watcher = want.map(|root| watch::Watcher::start(&root, ctx));
+            self.live_job = None;
+        }
+        let Some(w) = &self.watcher else { return };
+        if let Some(err) = w.take_error() {
+            self.toast(err);
+        }
+        if let Some(job) = &self.live_job {
+            let Ok(results) = job.rx.try_recv() else { return };
+            self.live_job = None;
+            self.apply_live(results);
+            return;
+        }
+        // a rescan is running; its result would make the paths stale
+        if self.job.is_some() {
+            return;
+        }
+        let Some(w) = &self.watcher else { return };
+        let Some(tree) = &self.tree else { return };
+        let Some(changes) = w.take_ready() else {
+            let wait = BIG_FILE_CHECK.saturating_sub(self.last_big_check.elapsed());
+            if wait.is_zero() {
+                self.last_big_check = Instant::now();
+                let files: Vec<(u32, PathBuf)> =
+                    tree.big_files(BIG_FILE_MIN, BIG_FILE_COUNT).into_iter().map(|id| (id, tree.path(id))).collect();
+                self.live_job = Some(start_live_job(ctx, move || {
+                    LiveResult::Files(
+                        files
+                            .into_iter()
+                            .map(|(id, p)| {
+                                let m = std::fs::symlink_metadata(&p).ok().map(|m| util::meta(&m));
+                                (id, p, m)
+                            })
+                            .collect(),
+                    )
+                }));
+                return;
+            }
+            ctx.request_repaint_after(w.due_in().map_or(wait, |d| d.min(wait)));
+            return;
+        };
+        // folder to read again -> whether to read its subfolders too
+        let mut dirs: HashMap<u32, bool> = HashMap::new();
+        let folder_of = |p: &Path| {
+            let (mut id, _) = tree.nearest(p)?;
+            if !tree.nodes[id as usize].is_dir() {
+                id = tree.nodes[id as usize].parent;
+            }
+            (id != NONE).then_some(id)
+        };
+        for p in &changes.paths {
+            // a change to an entry is a change to the folder listing it
+            let dir = if *p == tree.root_path { p.as_path() } else { p.parent().unwrap_or(p) };
+            if let Some(id) = folder_of(dir) {
+                dirs.entry(id).or_insert(false);
+            }
+        }
+        for p in &changes.rescan {
+            if let Some(id) = folder_of(p) {
+                dirs.insert(id, true);
+            }
+        }
+        let full: Vec<u32> = dirs.iter().filter(|e| *e.1).map(|e| *e.0).collect();
+        dirs.retain(|&id, _| !full.iter().any(|&f| f != id && tree.is_within(id, f)));
+        if dirs.is_empty() {
+            return;
+        }
+        let list: Vec<scan::Refresh> = dirs
+            .into_iter()
+            .map(|(id, deep)| {
+                let keep = if deep {
+                    HashSet::new()
+                } else {
+                    let n = &tree.nodes[id as usize];
+                    n.children.iter().map(|&c| &tree.nodes[c as usize]).filter(|c| c.is_dir()).map(|c| c.name.clone()).collect()
+                };
+                scan::Refresh { path: tree.path(id), keep }
+            })
+            .collect();
+        let (root, cross) = (tree.root_path.clone(), self.settings.cross_fs);
+        self.live_job = Some(start_live_job(ctx, move || LiveResult::Dirs(scan::refresh(&root, cross, list))));
+    }
+
+    fn apply_live(&mut self, result: LiveResult) {
+        let Some(tree) = &mut self.tree else { return };
+        let view_path = tree.path(self.view_root);
+        let space = tree.space.map(|s| (s.avail, s.used));
+        let mut changed = false;
+        match result {
+            LiveResult::Dirs(dirs) => {
+                for (path, node) in dirs {
+                    let Some(node) = node else { continue };
+                    if let Some((id, true)) = tree.nearest(&path) {
+                        if tree.nodes[id as usize].is_dir() {
+                            tree.merge_dir(id, node);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            LiveResult::Files(files) => {
+                for (id, path, meta) in files {
+                    // skip files that were replaced or removed in the meantime
+                    let Some(m) = meta else { continue };
+                    if tree.is_live(id) && tree.nodes[id as usize].kind == Kind::File && tree.path(id) == path {
+                        changed |= tree.update_file(id, &m);
+                    }
+                }
+            }
+        }
+        tree.refresh_space();
+        if !changed && tree.space.map(|s| (s.avail, s.used)) == space {
+            return;
+        }
+        // the folder being looked at may be gone: show the nearest one left
+        if !tree.is_live(self.view_root) {
+            self.view_root = tree.nearest(&view_path).map(|n| n.0).unwrap_or(tree.root);
+        }
+        self.back.retain(|&id| tree.is_live(id));
+        self.fwd.retain(|&id| tree.is_live(id));
+        if self.selected.is_some_and(|t| !tree.is_live(t.node())) {
+            self.selected = None;
+        }
+        let before = self.expanded.len();
+        self.expanded.retain(|&id| tree.is_live(id));
+        if self.expanded.len() != before {
+            self.expanded_ver += 1;
+        }
+        self.anim_from = self.cache.as_ref().map(|c| (c.key, c.items.clone()));
+        self.update_history_vals();
         self.recompute();
     }
 
@@ -703,6 +923,44 @@ fn item_fills(item: &Item, tree: &Tree, mode: ColorMode, age: DateKind, now: i64
     }
 }
 
+/// The boxes of one treemap item at `r`, faded by `alpha`.
+fn item_shapes(shapes: &mut Vec<Shape>, item: &Item, r: Rect, fills: &Fills, alpha: f32) {
+    let rad = radius_for(r);
+    shapes.push(Shape::Rect(RectShape::filled(r, CornerRadius::same(rad), fills.body.gamma_multiply(alpha))));
+    let header = item.header && r.height() > HEADER_H;
+    if header {
+        let hr = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + HEADER_H));
+        let cr = CornerRadius { nw: rad, ne: rad, sw: 0, se: 0 };
+        shapes.push(Shape::Rect(RectShape::filled(hr, cr, fills.header.gamma_multiply(alpha))));
+    }
+    // subtle top highlight on solid tiles gives a soft, modern depth
+    if !header && r.height() > 10.0 && r.width() > 10.0 && item.kind != ItemKind::Free {
+        let hl = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + 1.0));
+        shapes.push(Shape::Rect(RectShape::filled(
+            hl.shrink2(vec2(rad as f32, 0.0)),
+            CornerRadius::ZERO,
+            Color32::from_white_alpha(22).gamma_multiply(alpha),
+        )));
+    }
+    if item.kind == ItemKind::Free {
+        shapes.push(Shape::Rect(RectShape::stroke(
+            r,
+            CornerRadius::same(rad),
+            Stroke::new(1.0_f32, Color32::from_rgb(60, 72, 70).gamma_multiply(alpha)),
+            StrokeKind::Inside,
+        )));
+    }
+}
+
+/// `r` scaled by `f` around its centre.
+fn scale_rect(r: Rect, f: f32) -> Rect {
+    Rect::from_center_size(r.center(), r.size() * f)
+}
+
+fn lerp_rect(a: Rect, b: Rect, t: f32) -> Rect {
+    Rect::from_min_max(a.min.lerp(b.min, t), a.max.lerp(b.max, t))
+}
+
 fn radius_for(r: Rect) -> u8 {
     (r.width().min(r.height()) * 0.22).clamp(0.0, 6.0) as u8
 }
@@ -752,36 +1010,13 @@ impl App {
         let mut labels = Vec::new();
         let root_total = self.vals.size[self.view_root as usize].max(1);
 
-        for item in &items {
+        for (idx, item) in items.iter().enumerate() {
             let r = item.rect;
             if r.width() < 1.0 || r.height() < 1.0 {
                 continue;
             }
             let fills = item_fills(item, tree, self.settings.color, self.settings.age_date, now);
-            let rad = radius_for(r);
-            shapes.push(Shape::Rect(RectShape::filled(r, CornerRadius::same(rad), fills.body)));
-            if item.header {
-                let hr = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + HEADER_H));
-                let cr = CornerRadius { nw: rad, ne: rad, sw: 0, se: 0 };
-                shapes.push(Shape::Rect(RectShape::filled(hr, cr, fills.header)));
-            }
-            // subtle top highlight on solid tiles gives a soft, modern depth
-            if !item.header && r.height() > 10.0 && r.width() > 10.0 && item.kind != ItemKind::Free {
-                let hl = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + 1.0));
-                shapes.push(Shape::Rect(RectShape::filled(
-                    hl.shrink2(vec2(rad as f32, 0.0)),
-                    CornerRadius::ZERO,
-                    Color32::from_white_alpha(22),
-                )));
-            }
-            if item.kind == ItemKind::Free {
-                shapes.push(Shape::Rect(RectShape::stroke(
-                    r,
-                    CornerRadius::same(rad),
-                    Stroke::new(1.0_f32, Color32::from_rgb(60, 72, 70)),
-                    StrokeKind::Inside,
-                )));
-            }
+            item_shapes(&mut shapes, item, r, &fills, 1.0);
 
             // ---- labels
             let node = &tree.nodes[item.node as usize];
@@ -826,7 +1061,7 @@ impl App {
                 if avail > sg.size().x + 50.0 {
                     name_w = avail - sg.size().x - 12.0;
                     let y = r.min.y + (HEADER_H - sg.size().y) / 2.0;
-                    labels.push(Label { pos: pos2(r.max.x - 7.0 - sg.size().x, y), galley: sg });
+                    labels.push(Label { pos: pos2(r.max.x - 7.0 - sg.size().x, y), galley: sg, item: idx });
                 }
                 let ico = if is_root { icon::HARD_DRIVE } else { icon::FOLDER_SIMPLE };
                 let mut text = format!("{ico}  {name}");
@@ -837,7 +1072,7 @@ impl App {
                 }
                 if let Some(g) = fit_text(painter, &text, &hfont, fg, name_w) {
                     let y = r.min.y + (HEADER_H - g.size().y) / 2.0;
-                    labels.push(Label { pos: pos2(r.min.x + 7.0, y), galley: g });
+                    labels.push(Label { pos: pos2(r.min.x + 7.0, y), galley: g, item: idx });
                 }
             } else if item.kind != ItemKind::DirOpen && r.width() >= 30.0 && r.height() >= 16.0 {
                 let max_w = r.width() - 10.0;
@@ -866,7 +1101,7 @@ impl App {
                 for g in lines {
                     let x = r.center().x - g.size().x / 2.0;
                     let h = g.size().y;
-                    labels.push(Label { pos: pos2(x, y), galley: g });
+                    labels.push(Label { pos: pos2(x, y), galley: g, item: idx });
                     y += h + gap;
                 }
             }
@@ -952,7 +1187,19 @@ impl App {
             ppp: ppp.to_bits(),
         };
         if self.cache.as_ref().map(|c| c.key != key).unwrap_or(true) {
-            self.cache = Some(self.build_cache(key, rect, &painter, ppp));
+            let cache = self.build_cache(key, rect, &painter, ppp);
+            // slide only when a live update changed the map and nothing else
+            self.anim = self
+                .anim_from
+                .take()
+                .filter(|(k, _)| CacheKey { ver: key.ver, ..*k } == key)
+                .and_then(|(_, old)| Anim::new(old, &cache.items));
+            self.cache = Some(cache);
+        }
+        self.anim_from = None;
+        let t = self.anim.as_ref().map(|a| a.start.elapsed().as_secs_f32() / ANIM_TIME).unwrap_or(1.0);
+        if t >= 1.0 {
+            self.anim = None;
         }
         let cache = self.cache.as_ref().unwrap();
         if cache.items.len() <= 1 {
@@ -963,13 +1210,43 @@ impl App {
             };
             painter.text(rect.center(), Align2::CENTER_CENTER, msg, font(16.0), TEXT_DIM);
         }
-        painter.add(Shape::Mesh(cache.mesh.clone()));
-        for l in &cache.labels {
-            painter.galley(l.pos, l.galley.clone(), TEXT);
+        if let (Some(anim), Some(tree)) = (&self.anim, &self.tree) {
+            // labels of moving boxes and hatching come back when the slide is done
+            let e = 1.0 - (1.0 - t).powi(3);
+            let now = util::now_secs();
+            let (mode, age) = (self.settings.color, self.settings.age_date);
+            let mut shapes = Vec::with_capacity(cache.items.len() + anim.gone.len());
+            for (i, it) in cache.items.iter().enumerate() {
+                let fills = item_fills(it, tree, mode, age, now);
+                match anim.from[i] {
+                    _ if anim.still[i] => item_shapes(&mut shapes, it, it.rect, &fills, 1.0),
+                    Some(old) => item_shapes(&mut shapes, it, lerp_rect(old, it.rect, e), &fills, 1.0),
+                    None => item_shapes(&mut shapes, it, scale_rect(it.rect, 0.6 + 0.4 * e), &fills, e),
+                }
+            }
+            for it in &anim.gone {
+                let fills = item_fills(it, tree, mode, age, now);
+                item_shapes(&mut shapes, it, scale_rect(it.rect, 1.0 - 0.6 * e), &fills, 1.0 - e);
+            }
+            let mut tess = Tessellator::new(ppp, TessellationOptions::default(), [1, 1], vec![]);
+            let mut mesh = Mesh::default();
+            for s in shapes {
+                tess.tessellate_shape(s, &mut mesh);
+            }
+            painter.add(Shape::Mesh(Arc::new(mesh)));
+            for l in cache.labels.iter().filter(|l| anim.still[l.item]) {
+                painter.galley(l.pos, l.galley.clone(), TEXT);
+            }
+            ui.ctx().request_repaint();
+        } else {
+            painter.add(Shape::Mesh(cache.mesh.clone()));
+            for l in &cache.labels {
+                painter.galley(l.pos, l.galley.clone(), TEXT);
+            }
         }
 
         // hatching on free space
-        for it in cache.items.iter().filter(|i| i.kind == ItemKind::Free) {
+        for it in cache.items.iter().filter(|i| i.kind == ItemKind::Free && self.anim.is_none()) {
             let p = painter.with_clip_rect(it.rect.shrink(2.0));
             let step = 14.0;
             let h = it.rect.height();
@@ -1518,6 +1795,14 @@ impl App {
             group(ui, |ui| {
                 if icon_btn(ui, icon::SIDEBAR_SIMPLE, "Show list  (L)", true, self.panel.open).clicked() {
                     self.panel.open = !self.panel.open;
+                }
+                let live_tip = if self.settings.live {
+                    "Live updates are on: the map follows changes on disk"
+                } else {
+                    "Live updates are off: press F5 to rescan"
+                };
+                if icon_btn(ui, icon::BROADCAST, live_tip, true, self.settings.live).clicked() {
+                    self.settings.live = !self.settings.live;
                 }
                 if icon_btn(ui, icon::ARROWS_CLOCKWISE, "Rescan  (F5)", self.job.is_none(), false).clicked() {
                     let id = self.view_root;
@@ -2147,6 +2432,7 @@ impl eframe::App for App {
             self.refresh_mounts(ctx);
         }
         self.poll_job();
+        self.poll_live(ctx);
         self.poll_dupes();
         self.save_prefs_if_changed();
         self.handle_drops(ctx);

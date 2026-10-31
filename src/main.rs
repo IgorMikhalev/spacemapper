@@ -16,6 +16,7 @@ mod scan;
 mod theme;
 mod tree;
 mod util;
+mod watch;
 
 use eframe::egui;
 use std::path::PathBuf;

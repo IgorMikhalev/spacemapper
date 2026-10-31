@@ -38,9 +38,9 @@ impl App {
         let mut text = format!(
             "# Spacemapper settings, written automatically\n\
              color = {color}\nage_date = {age}\nsize = {size}\ndetail = {}\ndepth = {}\n\
-             show_free = {}\nshow_unknown = {}\nother_drives = {}\n\
+             show_free = {}\nshow_unknown = {}\nother_drives = {}\nlive_updates = {}\n\
              list = {}\nlist_tab = {tab}\nduplicates_min = {}\n",
-            s.detail, s.depth, s.show_free, s.show_unknown, s.cross_fs, self.panel.open, self.dupes.min_idx
+            s.detail, s.depth, s.show_free, s.show_unknown, s.cross_fs, s.live, self.panel.open, self.dupes.min_idx
         );
         if cfg!(target_os = "macos") {
             text.push_str(&format!("ask_full_disk_access = {}\n", s.ask_full_disk_access));
@@ -77,6 +77,7 @@ impl App {
                 "show_free" => s.show_free = b,
                 "show_unknown" => s.show_unknown = b,
                 "other_drives" => s.cross_fs = b,
+                "live_updates" => s.live = b,
                 "ask_full_disk_access" => s.ask_full_disk_access = b,
                 "list" => self.panel.open = b,
                 "list_tab" => {
