@@ -2488,8 +2488,8 @@ impl eframe::App for App {
         if self.panel.open {
             egui::SidePanel::right("list")
                 .resizable(true)
-                .default_width(340.0)
-                .width_range(240.0..=700.0)
+                .default_width(300.0)
+                .width_range(180.0..=700.0)
                 .show_separator_line(false)
                 .frame(egui::Frame::new().fill(SURFACE).inner_margin(Margin { left: 10, right: 8, top: 0, bottom: 4 }))
                 .show(ctx, |ui| self.side_panel(ui));

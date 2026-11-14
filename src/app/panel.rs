@@ -156,8 +156,9 @@ impl App {
     pub(super) fn side_panel(&mut self, ui: &mut Ui) {
         let st = &mut self.panel;
         ui.add_space(8.0);
-        // tabs
-        ui.horizontal_wrapped(|ui| {
+        // tabs: two rows, so the panel can be narrow
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
             group(ui, |ui| {
                 for (tab, ic, label, tip) in [
                     (Tab::Contents, icon::FOLDER_SIMPLE, "Contents", "Items in the current folder"),
@@ -192,7 +193,7 @@ impl App {
         }
         let st = &mut self.panel;
         // sorting
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Sort").size(12.5).color(TEXT_FAINT));
             let options: &[(SortBy, &str)] = match st.tab {
                 Tab::Types => &[(SortBy::Size, "Size"), (SortBy::Count, "Files"), (SortBy::Name, "Name")],

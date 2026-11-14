@@ -176,7 +176,7 @@ impl App {
         );
         ui.add_space(4.0);
         let mut start = false;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Larger than").size(12.5).color(TEXT_FAINT));
             group(ui, |ui| {
                 for (i, &(_, label)) in DUP_MIN.iter().enumerate() {
@@ -364,7 +364,7 @@ impl App {
         }
         // which earlier scan
         let mut sel = self.changes.selected;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Compared with").size(12.5).color(TEXT_FAINT));
             egui::ComboBox::from_id_salt("history")
                 .selected_text(util::fmt_date(self.changes.entries[sel].time))
