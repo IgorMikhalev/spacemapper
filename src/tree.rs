@@ -212,8 +212,11 @@ impl Tree {
 
     /// Merge a fresh read of folder `id` (from `scan::refresh`). Entries that
     /// are still there keep their node id; `F_KEEP` folders keep their
-    /// subtree. Removed entries are detached from the tree. Call
-    /// `refresh_space` afterwards.
+    /// subtree, and folders read again are merged the same way, one level at
+    /// a time. A folder that can no longer be read keeps what the tree has:
+    /// live updates run without the full access the scan may have had.
+    /// Removed entries are detached from the tree. Call `refresh_space`
+    /// afterwards.
     pub fn merge_dir(&mut self, id: u32, t: TNode) {
         let old: HashMap<Box<str>, u32> = self.nodes[id as usize]
             .children
@@ -227,6 +230,19 @@ impl Tree {
         let mut ids = Vec::with_capacity(children.len() + pseudo.len());
         let mut kept = std::collections::HashSet::new();
         for c in children {
+            let old_dir = old.get(&c.name).copied().filter(|&o| self.nodes[o as usize].is_dir());
+            if let (Some(o), Kind::Dir, false) = (old_dir, c.kind, c.flags & F_KEEP != 0) {
+                let was_readable = self.nodes[o as usize].flags & F_DENIED == 0;
+                if c.flags & F_DENIED == 0 || !was_readable {
+                    let flags = c.flags;
+                    self.merge_dir(o, c);
+                    self.nodes[o as usize].flags = flags;
+                }
+                // else: readable before (full access), not now: keep it as it is
+                kept.insert(o);
+                ids.push(o);
+                continue;
+            }
             let prev = old.get(&c.name).copied().filter(|&o| {
                 let n = &self.nodes[o as usize];
                 // a folder is kept as it is; a file is updated in place
@@ -541,6 +557,43 @@ mod tests {
         assert_eq!(tree.live_folder(Path::new("/Volumes")), Some(volumes));
         assert_eq!(tree.live_folder(Path::new("/Volumes/Archive")), None);
         assert_eq!(tree.live_folder(Path::new("/Volumes/Archive/Photos/a.jpg")), None);
+    }
+
+    #[test]
+    fn live_refresh_keeps_folders_it_can_no_longer_read() {
+        let node = |name: &str, kind: Kind, flags: u8, alloc: u64, children: Vec<TNode>| TNode {
+            name: name.into(),
+            kind,
+            alloc,
+            apparent: alloc,
+            mtime: 0,
+            ctime: 0,
+            atime: 0,
+            flags,
+            children,
+        };
+        let dir = |name: &str, flags: u8, children: Vec<TNode>| node(name, Kind::Dir, flags, 0, children);
+        // scanned with full access: the other user's folder was read
+        let full = dir("/", 0, vec![dir("Users", 0, vec![
+            dir("other", 0, vec![node("big", Kind::File, 0, 1000, vec![])]),
+            dir("me", 0, vec![node("a", Kind::File, 0, 10, vec![])]),
+        ])]);
+        let mut tree = Tree::from_scan(full, Path::new("/"));
+        let users = tree.nearest(Path::new("/Users")).unwrap().0;
+        let me = tree.nearest(Path::new("/Users/me")).unwrap().0;
+        let big = tree.nearest(Path::new("/Users/other/big")).unwrap().0;
+        // read again in full without access: "other" comes back unreadable
+        let fresh = dir("Users", 0, vec![
+            dir("other", F_DENIED, vec![]),
+            dir("me", 0, vec![node("a", Kind::File, 0, 20, vec![]), node("b", Kind::File, 0, 5, vec![])]),
+        ]);
+        tree.merge_dir(users, fresh);
+        assert!(tree.is_live(big));
+        assert_eq!(tree.nearest(Path::new("/Users/other/big")), Some((big, true)));
+        assert_eq!(tree.nodes[tree.nearest(Path::new("/Users/other")).unwrap().0 as usize].flags & F_DENIED, 0);
+        // the readable folder is merged and keeps its id
+        assert_eq!(tree.nearest(Path::new("/Users/me")), Some((me, true)));
+        assert_eq!(tree.nodes[me as usize].children.len(), 2);
     }
 
     #[test]
