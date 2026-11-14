@@ -2,7 +2,7 @@
 //! Flat arena holding the scanned tree, plus size aggregation with filters.
 
 use crate::filter::{FileInfo, Filter};
-use crate::scan::{Kind, TNode, F_DENIED, F_KEEP};
+use crate::scan::{Kind, TNode, F_DENIED, F_KEEP, F_MOUNT, F_SNAPSHOTS};
 use std::collections::HashMap;
 use crate::util::{self, Mount, Space};
 use std::path::{Path, PathBuf};
@@ -288,6 +288,19 @@ impl Tree {
         Some((id, true))
     }
 
+    /// The folder live updates read again after a change at `path`: the
+    /// deepest folder in the tree that holds it. None if `path` is outside the
+    /// scan or inside a folder the scan did not enter (another drive, a
+    /// system volume, snapshots): reading that folder again would pull the
+    /// whole other filesystem into the tree.
+    pub fn live_folder(&self, path: &Path) -> Option<u32> {
+        let (mut id, _) = self.nearest(path)?;
+        if !self.nodes[id as usize].is_dir() {
+            id = self.nodes[id as usize].parent;
+        }
+        (id != NONE && self.nodes[id as usize].flags & (F_MOUNT | F_SNAPSHOTS) == 0).then_some(id)
+    }
+
     /// The biggest files in the tree with at least `min` bytes on disk,
     /// largest first, at most `max` of them.
     pub fn big_files(&self, min: u64, max: usize) -> Vec<u32> {
@@ -506,6 +519,29 @@ mod tests {
     use crate::scan::{self, Progress, Refresh};
     use std::fs;
     use std::sync::Arc;
+
+    #[test]
+    fn live_updates_skip_folders_not_entered() {
+        let dir = |name: &str, flags: u8, children: Vec<TNode>| TNode {
+            name: name.into(),
+            kind: Kind::Dir,
+            alloc: 0,
+            apparent: 0,
+            mtime: 0,
+            ctime: 0,
+            atime: 0,
+            flags,
+            children,
+        };
+        let root = dir("/", 0, vec![dir("Volumes", 0, vec![dir("Archive", F_MOUNT, vec![])]), dir("Users", 0, vec![])]);
+        let tree = Tree::from_scan(root, Path::new("/"));
+        let users = tree.nearest(Path::new("/Users")).unwrap().0;
+        let volumes = tree.nearest(Path::new("/Volumes")).unwrap().0;
+        assert_eq!(tree.live_folder(Path::new("/Users/x")), Some(users));
+        assert_eq!(tree.live_folder(Path::new("/Volumes")), Some(volumes));
+        assert_eq!(tree.live_folder(Path::new("/Volumes/Archive")), None);
+        assert_eq!(tree.live_folder(Path::new("/Volumes/Archive/Photos/a.jpg")), None);
+    }
 
     #[test]
     fn live_refresh_keeps_ids_and_drops_removed() {

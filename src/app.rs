@@ -551,13 +551,7 @@ impl App {
         };
         // folder to read again -> whether to read its subfolders too
         let mut dirs: HashMap<u32, bool> = HashMap::new();
-        let folder_of = |p: &Path| {
-            let (mut id, _) = tree.nearest(p)?;
-            if !tree.nodes[id as usize].is_dir() {
-                id = tree.nodes[id as usize].parent;
-            }
-            (id != NONE).then_some(id)
-        };
+        let folder_of = |p: &Path| tree.live_folder(p);
         for p in &changes.paths {
             // a change to an entry is a change to the folder listing it
             let dir = if *p == tree.root_path { p.as_path() } else { p.parent().unwrap_or(p) };
